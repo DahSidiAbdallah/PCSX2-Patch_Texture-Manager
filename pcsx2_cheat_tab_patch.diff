@@ -1,0 +1,132 @@
+*** Begin Patch
+*** Update File: main.py
+@@ def parse_pnach_text(text: str) -> PnachData:
+-                # Preserve comment or metadata lines (including bracket headers or key=value lines)
+-                # Keep original leading comment markers (//, #, ;) and formatting; strip only trailing newlines/spaces
+-                pd.comments.append(line.rstrip())
++                # Preserve comment or metadata lines (including bracket headers or key=value lines)
++                # If the line contains a bracket header followed by additional text on the same line (e.g. "[50/60 FPS] author-asasega ..."),
++                # split it so that the bracket header is kept as its own comment line. This allows the downstream grouping logic
++                # in build_pnach() to treat it as an explicit group label. The remainder of the line (if any) is appended as a separate
++                # comment so that author or description text is preserved.
++                mbr_full = re.match(r"^\s*\[([^\]]+)\]\s*(.+)$", line)
++                if mbr_full:
++                    header = mbr_full.group(1).strip()
++                    remainder = mbr_full.group(2).rstrip()
++                    pd.comments.append(f"[{header}]")
++                    if remainder:
++                        pd.comments.append(remainder)
++                    continue
++                # Keep original leading comment markers (//, #, ;) and formatting; strip only trailing newlines/spaces
++                pd.comments.append(line.rstrip())
+@@ def _autofill_from_text(self, text: str, prefer_filename_crc: Optional[str] = None):
+-            # Try PNACH first
++            # Always clear previous values. When loading a new codes or PNACH file,
++            # any previously displayed CRC, serials, title or source labels should be reset.
++            self.serial_edit.clear()
++            self.crc_edit.clear()
++            self.title_edit.clear()
++            # Note: the source_label may contain multiple sources separated by " | ". Clear it fully.
++            self.source_label.setText("")
++            # Try PNACH first
+@@ def _autofill_from_text(self, text: str, prefer_filename_crc: Optional[str] = None):
+-            # Push to UI
+-            if found_serials:
+-                self.serial_edit.setText('; '.join(sorted(set(found_serials))))
+-            if found_crc:
+-                self.crc_edit.setText(found_crc)
+-
+-            # Auto-resolve title from mapping
+-            title = None
+-            mapping = getattr(self, 'mapping', {}) or {}
+-            keys_to_try = []
+-            if found_crc: keys_to_try.append(found_crc)
+-            keys_to_try.extend(found_serials or [])
+-            sources = []
+-            for k in keys_to_try:
+-                kU = k.upper().strip()
+-                if kU in mapping:
+-                    title = mapping[kU]
+-                    sources.append("Title: mapping")
+-                    break
+-                kN = norm_serial_key(kU)
+-                if kN in mapping:
+-                    title = mapping[kN]
+-                    sources.append("Title: mapping")
+-                    break
+-
+-            # If still no title and user wants bundled lists, do a quick worker on the side
+-            if not title and (self.chk_offline_lists.isChecked()) and (found_crc or found_serials):
+-                def on_done(out):
+-                    picked = None
+-                    for kk in keys_to_try:
+-                        if kk.upper() in out:
+-                            picked = out[kk.upper()]
+-                            break
+-                    if picked:
+-                        self.title_edit.setText(picked)
+-                        self.source_label.setText("Title: offline lists")
+-                worker = ResolveWorker(keys_to_try, mapping, use_bundled_lists=True, try_online=False)
+-                worker.resolved.connect(on_done)
+-                self._start_worker(worker)
+-            elif title:
+-                self.title_edit.setText(title)
+-                self.source_label.setText(" | ".join(sources))
++            # Push to UI: fill serials and CRC if found
++            if found_serials:
++                self.serial_edit.setText('; '.join(sorted(set(found_serials))))
++            if found_crc:
++                self.crc_edit.setText(found_crc)
++
++            # Determine the title source. Prefer the title embedded in the PNACH file (gametitle=)
++            # over mapping or offline lists. Keep track of which source(s) provided the title.
++            title = None
++            source_tags = []
++            if found_title:
++                title = found_title.strip()
++                source_tags.append("Title: PNACH")
++            # If no title from PNACH, try the local mapping (CSV/JSON)
++            if not title:
++                mapping = getattr(self, 'mapping', {}) or {}
++                keys_to_try = []
++                if found_crc:
++                    keys_to_try.append(found_crc)
++                keys_to_try.extend(found_serials or [])
++                for k in keys_to_try:
++                    kU = k.upper().strip()
++                    if kU in mapping:
++                        title = mapping[kU]
++                        source_tags.append("Title: mapping")
++                        break
++                    kN = norm_serial_key(kU)
++                    if kN in mapping:
++                        title = mapping[kN]
++                        source_tags.append("Title: mapping")
++                        break
++            # If still no title and user wants bundled lists, spawn a worker to resolve offline
++            if not title and (self.chk_offline_lists.isChecked()) and (found_crc or found_serials):
++                keys_to_try = []
++                if found_crc:
++                    keys_to_try.append(found_crc)
++                keys_to_try.extend(found_serials or [])
++                def on_done(out):
++                    picked = None
++                    for kk in keys_to_try:
++                        if kk.upper() in out:
++                            picked = out[kk.upper()]
++                            break
++                    if picked:
++                        # Only set the title if it hasn't been set by PNACH or mapping
++                        if not self.title_edit.text().strip():
++                            self.title_edit.setText(picked)
++                            self.source_label.setText("Title: offline lists")
++                worker = ResolveWorker(keys_to_try, getattr(self, 'mapping', {}) or {}, use_bundled_lists=True, try_online=False)
++                worker.resolved.connect(on_done)
++                self._start_worker(worker)
++            else:
++                # If a title was found from PNACH or mapping, update the UI accordingly
++                if title:
++                    self.title_edit.setText(title)
++                    if source_tags:
++                        self.source_label.setText(" | ".join(source_tags))
+*** End Patch

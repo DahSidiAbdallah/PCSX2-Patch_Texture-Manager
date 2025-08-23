@@ -58,6 +58,8 @@ class PnachData:
     title: Optional[str] = None
     raw_pairs: List[Tuple[str, str]] = None  # [(addr, value)] both 8-hex uppercase
     comments: List[str] = None
+    # items preserves original file ordering: a list of either comment strings or (addr,value) tuples
+    items: List[Any] = None
 
     def __post_init__(self):
         if self.serials is None:
@@ -66,6 +68,8 @@ class PnachData:
             self.raw_pairs = []
         if self.comments is None:
             self.comments = []
+        if self.items is None:
+            self.items = []
 
 
 # Guess common PCSX2 user dir locations
@@ -269,16 +273,14 @@ def bundled_lookup_title(serial: str) -> Optional[str]:
                 # Prefer col7/col3 cells which typically hold titles
                 t = tr.find('td', attrs={'class': re.compile(r'col7|col3', re.I)})
                 if t:
-                    cand = t.get_text(' ', strip=True)
-                    # ignore unhelpful placeholders
-                    if cand and cand.strip() and cand.upper() not in ('INFO','TITLE','N/A','UNKNOWN') and re.search(r'[A-Za-z]', cand):
-                        title = cand
+                    title = t.get_text(' ', strip=True)
                 if not title:
                     # fallback: pick the best td text in the row excluding the serial cell
                     candidates = []  # list of (text, html)
                     for ctd in tr.find_all('td'):
                         ctxt = ctd.get_text(' ', strip=True)
-                        if not ctxt: continue
+                        if not ctxt:
+                            continue
                         if s_norm in ctxt.upper():
                             continue
                         candidates.append((ctxt, str(ctd)))
@@ -429,17 +431,41 @@ def parse_pnach_text(text: str) -> PnachData:
         m = PNACH_PATCH_LINE.match(scan_line)
         if m:
             # Accept all types, but only store address and value, pad value to 8
-            pd.raw_pairs.append((m.group(1).upper(), m.group(3).upper().rjust(8, "0")))
+            addr = m.group(1).upper()
+            val = m.group(3).upper().rjust(8, "0")
+            pair = (addr, val)
+            pd.raw_pairs.append(pair)
+            # preserve inline hint from the original line if present (// ...)
+            hint_m = re.search(r"//(.+)$", line)
+            hint = hint_m.group(1).strip() if hint_m else None
+            if hint:
+                pd.items.append((addr, val, hint))
+            else:
+                pd.items.append(pair)
         else:
             # Skip empty lines
             if not line.strip():
                 continue
+            # Preserve bracket headers that may include trailing text on the same line.
+            # Example: "[50/60 FPS] author-asasega ..." should become:
+            #   "[50/60 FPS]"
+            #   "author-asasega ..."
+            mbr_full = re.match(r"^\s*\[([^\]]+)\]\s*(.+)$", line)
+            if mbr_full:
+                header = mbr_full.group(1).strip()
+                remainder = mbr_full.group(2).rstrip()
+                pd.comments.append(f"[{header}]")
+                pd.items.append(f"[{header}]")
+                if remainder:
+                    pd.comments.append(remainder)
+                    pd.items.append(remainder)
+                continue
             # Skip title lines (already captured earlier)
             if TITLE_LINE.match(line):
                 continue
-            # Preserve comment or metadata lines (including bracket headers or key=value lines)
             # Keep original leading comment markers (//, #, ;) and formatting; strip only trailing newlines/spaces
             pd.comments.append(line.rstrip())
+            pd.items.append(line.rstrip())
     return pd
 
 
@@ -483,13 +509,18 @@ def build_pnach(pd: PnachData) -> str:
                 return label
         # Use inline comment if present and meaningful
         if inline_hints:
-            for hint in inline_hints:
-                if hint and not re.match(r"^(patch|cheat|code|modifier|fix|enable|disable|on|off|1|2|3|4|5|6|7|8|9|0| )+$", hint, re.I):
-                    label = hint.strip()
-                    if label not in used_labels:
-                        used_labels.add(label)
-                        return label
-        # Try to infer from code patterns and keywords
+            # Collate non-trivial inline hints and prefer the most common
+            meaningful = [h.strip() for h in inline_hints if h and not re.match(r"^(patch|cheat|code|modifier|fix|enable|disable|on|off|1|2|3|4|5|6|7|8|9|0| )+$", h, re.I)]
+            if meaningful:
+                # pick the most frequent meaningful hint
+                from collections import Counter
+                cnt = Counter(meaningful)
+                label = cnt.most_common(1)[0][0]
+                if label not in used_labels:
+                    used_labels.add(label)
+                    return label
+        # Try to infer from code patterns and keywords. Use pattern-based labels only as a fallback
+        # when no human-friendly hint is available.
         code_text = " ".join(f"{a} {v}" for a,v in codes)
         patterns = [
             # Gameplay/character (expanded synonyms)
@@ -531,11 +562,13 @@ def build_pnach(pd: PnachData) -> str:
             (r"^1[0-9A-F]{7}", "Write Patch"),
             (r"^0[0-9A-F]{7}", "Write Patch"),
         ]
-        for pat, name in patterns:
-            if re.search(pat, code_text, re.I):
-                if name not in used_labels:
-                    used_labels.add(name)
-                    return name
+        # Only consider address/value pattern labels if there were no label_hint and no meaningful inline hints
+        if (not label_hint) and (not inline_hints or not any(h and not re.match(r"^(patch|cheat|code|modifier|fix|enable|disable|on|off|1|2|3|4|5|6|7|8|9|0| )+$", h, re.I) for h in inline_hints)):
+            for pat, name in patterns:
+                if re.search(pat, code_text, re.I):
+                    if name not in used_labels:
+                        used_labels.add(name)
+                        return name
         # Fallback: summarize by address/value
         if len(codes) == 1:
             a, v = codes[0]
@@ -550,11 +583,8 @@ def build_pnach(pd: PnachData) -> str:
         return label
 
     # Robust grouping: split by blank lines, comment headers, bracket headers, or contiguous patch lines
-    lines = []
-    if pd.comments:
-        lines.extend(pd.comments)
-    for addr, val in pd.raw_pairs:
-        lines.append((addr, val))
+    # Use pd.items to preserve original ordering of comments and patch lines
+    lines = list(pd.items) if getattr(pd, 'items', None) else []
 
     groups = []
     current_label = None
@@ -585,16 +615,105 @@ def build_pnach(pd: PnachData) -> str:
             elif item.strip() == "":
                 flush_group()
         elif isinstance(item, tuple):
-            addr, val = item
-            # Check for inline comment as hint
-            hint = None
-            m = re.search(r"//(.+)$", val)
-            if m:
-                hint = m.group(1).strip()
-                val = val.split("//")[0].strip()
+            # item may be (addr, val) or (addr, val, hint)
+            if len(item) == 3:
+                addr, val, hint = item
+            else:
+                addr, val = item
+                hint = None
+                # legacy: try to extract inline comment from val
+                m = re.search(r"//(.+)$", val)
+                if m:
+                    hint = m.group(1).strip()
+                    val = val.split("//")[0].strip()
             current_group.append((addr, val))
             inline_hints.append(hint)
     flush_group()
+
+    # Heuristic splitting: sometimes multiple distinct cheats are merged into a single group
+    # (no blank lines / no explicit headers). Attempt to split large mixed groups by
+    # meaningful inline hints or by address prefix clustering so each logical cheat is separated.
+    def _is_trivial_hint(h):
+        return not h or re.match(r"^(patch|cheat|code|modifier|fix|enable|disable|on|off|1|2|3|4|5|6|7|8|9|0| )+$", h, re.I)
+
+    def split_group_if_mixed(label_hint, codes, hints):
+        # Return list of (label_hint, codes, hints) - possibly split
+        if not codes or len(codes) <= 1:
+            return [(label_hint, codes, hints)]
+        # If multiple distinct meaningful inline hints exist, split by contiguous runs of hints
+        meaningful_keys = [ (h.strip() if h and not _is_trivial_hint(h) else "__NO_HINT__") for h in hints ]
+        # If there are meaningful hint keys (not all __NO_HINT__), split by contiguous runs of keys
+        if any(k != "__NO_HINT__" for k in meaningful_keys):
+            res = []
+            cur_codes = []
+            cur_hints = []
+            cur_key = meaningful_keys[0]
+            for (a,v), k, h in zip(codes, meaningful_keys, hints):
+                if k != cur_key and cur_codes:
+                    res.append((None if cur_key=="__NO_HINT__" else cur_key, list(cur_codes), list(cur_hints)))
+                    cur_codes = []
+                    cur_hints = []
+                    cur_key = k
+                cur_codes.append((a,v))
+                cur_hints.append(h)
+            if cur_codes:
+                res.append((None if cur_key=="__NO_HINT__" else cur_key, list(cur_codes), list(cur_hints)))
+            # If splitting produced more than one group, merge very small runs into neighbors
+            if len(res) > 1:
+                # merge threshold: runs smaller than this will be merged into the larger neighbor
+                # Lowered to 1 to allow single-line meaningful hints to form their own groups
+                min_run = 1
+                i = 0
+                merged = []
+                while i < len(res):
+                    key, rcodes, rhints = res[i]
+                    if len(rcodes) < min_run:
+                        # try merge into previous if exists, else into next
+                        if merged:
+                            # merge into previous
+                            pk, pcodes, phints = merged[-1]
+                            merged[-1] = (pk, pcodes + rcodes, phints + rhints)
+                        else:
+                            # merge into next
+                            if i+1 < len(res):
+                                nk, ncodes, nhints = res[i+1]
+                                res[i+1] = (nk, rcodes + ncodes, rhints + nhints)
+                            else:
+                                # single tiny run at end, append as-is
+                                merged.append((key, rcodes, rhints))
+                        i += 1
+                        continue
+                    else:
+                        merged.append((key, rcodes, rhints))
+                        i += 1
+                # If merging reduced to multiple groups, return merged
+                if len(merged) > 1:
+                    return merged
+        # Fallback clustering by top-byte prefix if group looks mixed
+        prefixes = [a[:2] for a, _ in codes]
+        uniq_pref = sorted(set(prefixes), key=lambda x: prefixes.count(x), reverse=True)
+        if len(uniq_pref) > 1 and len(codes) >= 4:
+            # split preserving order by prefix groups
+            split_map = {}
+            for p in uniq_pref:
+                split_map[p] = []
+            for a, v in codes:
+                split_map[a[:2]].append((a, v))
+            res = []
+            for p in uniq_pref:
+                grp = split_map.get(p, [])
+                if grp:
+                    res.append((None, grp, [None]*len(grp)))
+            return res
+        return [(label_hint, codes, hints)]
+
+    # Apply splitting pass
+    post_groups = []
+    for label, codes, hints in groups:
+        splits = split_group_if_mixed(label, codes, hints)
+        for s_label, s_codes, s_hints in splits:
+            post_groups.append((s_label, s_codes, s_hints))
+    groups = post_groups
 
     used_labels = set()
     if not groups:
@@ -1119,22 +1238,17 @@ class CheatsTab(QWidget):
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-
         # Target directories panel
         self.paths_group = QGroupBox("PCSX2 Folders")
         fl = QFormLayout(self.paths_group)
         self.cheats_dir = QLineEdit()
-        self.cheatsws_dir = QLineEdit()
         self.textures_dir = QLineEdit()
         self.btn_browse_cheats = QPushButton("Browse…")
         self.btn_browse_cheats.clicked.connect(lambda: self._pick_dir(self.cheats_dir))
-        self.btn_browse_cheatsws = QPushButton("Browse…")
-        self.btn_browse_cheatsws.clicked.connect(lambda: self._pick_dir(self.cheatsws_dir))
         self.btn_browse_textures = QPushButton("Browse…")
         self.btn_browse_textures.clicked.connect(lambda: self._pick_dir(self.textures_dir))
 
         fl.addRow("cheats:", self._row(self.cheats_dir, self.btn_browse_cheats))
-        fl.addRow("cheats_ws:", self._row(self.cheatsws_dir, self.btn_browse_cheatsws))
         fl.addRow("textures:", self._row(self.textures_dir, self.btn_browse_textures))
         layout.addWidget(self.paths_group)
 
@@ -1150,7 +1264,6 @@ class CheatsTab(QWidget):
         self.input_mode.addItems([
             "Paste RAW 8x8 pairs",
             "Open existing .pnach file",
-            "Convert non-RAW (Omniconvert)…",
         ])
 
         self.codes_text = QTextEdit()
@@ -1575,7 +1688,6 @@ class CheatsTab(QWidget):
 
     def load_paths(self, paths: dict):
         self.cheats_dir.setText(paths.get("cheats", ""))
-        self.cheatsws_dir.setText(paths.get("cheats_ws", ""))
         self.textures_dir.setText(paths.get("textures", ""))
 
     def _pick_dir(self, line: QLineEdit):
@@ -1709,6 +1821,13 @@ class CheatsTab(QWidget):
         - Fallbacks: filename CRC, emuLog scan
         - Auto-fill Title from local mapping and/or bundled lists if checkbox is on
         """
+        # Always clear previous values. When loading a new codes or PNACH file,
+        # any previously displayed CRC, serials, title or source labels should be reset.
+        self.serial_edit.clear()
+        self.crc_edit.clear()
+        self.title_edit.clear()
+        # Note: the source_label may contain multiple sources separated by " | ". Clear it fully.
+        self.source_label.setText("")
         # Try PNACH first
         pd = parse_pnach_text(text)
         found_crc = pd.crc
@@ -1734,33 +1853,43 @@ class CheatsTab(QWidget):
             if suggested:
                 found_crc = suggested
 
-        # Push to UI
+        # Push to UI: fill serials and CRC if found
         if found_serials:
             self.serial_edit.setText('; '.join(sorted(set(found_serials))))
         if found_crc:
             self.crc_edit.setText(found_crc)
 
-        # Auto-resolve title from mapping
+        # Determine the title source. Prefer the title embedded in the PNACH file (gametitle=)
+        # over mapping or offline lists. Keep track of which source(s) provided the title.
         title = None
-        mapping = getattr(self, 'mapping', {}) or {}
-        keys_to_try = []
-        if found_crc: keys_to_try.append(found_crc)
-        keys_to_try.extend(found_serials or [])
-        sources = []
-        for k in keys_to_try:
-            kU = k.upper().strip()
-            if kU in mapping:
-                title = mapping[kU]
-                sources.append("Title: mapping")
-                break
-            kN = norm_serial_key(kU)
-            if kN in mapping:
-                title = mapping[kN]
-                sources.append("Title: mapping")
-                break
-
-        # If still no title and user wants bundled lists, do a quick worker on the side
+        source_tags = []
+        if found_title:
+            title = found_title.strip()
+            source_tags.append("Title: PNACH")
+        # If no title from PNACH, try the local mapping (CSV/JSON)
+        if not title:
+            mapping = getattr(self, 'mapping', {}) or {}
+            keys_to_try = []
+            if found_crc:
+                keys_to_try.append(found_crc)
+            keys_to_try.extend(found_serials or [])
+            for k in keys_to_try:
+                kU = k.upper().strip()
+                if kU in mapping:
+                    title = mapping[kU]
+                    source_tags.append("Title: mapping")
+                    break
+                kN = norm_serial_key(kU)
+                if kN in mapping:
+                    title = mapping[kN]
+                    source_tags.append("Title: mapping")
+                    break
+        # If still no title and user wants bundled lists, spawn a worker to resolve offline
         if not title and (self.chk_offline_lists.isChecked()) and (found_crc or found_serials):
+            keys_to_try = []
+            if found_crc:
+                keys_to_try.append(found_crc)
+            keys_to_try.extend(found_serials or [])
             def on_done(out):
                 picked = None
                 for kk in keys_to_try:
@@ -1768,14 +1897,19 @@ class CheatsTab(QWidget):
                         picked = out[kk.upper()]
                         break
                 if picked:
-                    self.title_edit.setText(picked)
-                    self.source_label.setText("Title: offline lists")
-            worker = ResolveWorker(keys_to_try, mapping, use_bundled_lists=True, try_online=False)
+                    # Only set the title if it hasn't been set by PNACH or mapping
+                    if not self.title_edit.text().strip():
+                        self.title_edit.setText(picked)
+                        self.source_label.setText("Title: offline lists")
+            worker = ResolveWorker(keys_to_try, getattr(self, 'mapping', {}) or {}, use_bundled_lists=True, try_online=False)
             worker.resolved.connect(on_done)
             self._start_worker(worker)
-        elif title:
-            self.title_edit.setText(title)
-            self.source_label.setText(" | ".join(sources))
+        else:
+            # If a title was found from PNACH or mapping, update the UI accordingly
+            if title:
+                self.title_edit.setText(title)
+                if source_tags:
+                    self.source_label.setText(" | ".join(source_tags))
 
     def _resolve_title_clicked(self):
         keys: List[str] = []
@@ -1852,14 +1986,11 @@ class CheatsTab(QWidget):
             if crc: pd.crc = crc
             if not pd.raw_pairs:
                 QMessageBox.information(self, "No patch lines", "The .pnach contains no patch lines in 'patch=1,EE,XXXXXXXX,extended,YYYYYYYY' format.")
-        else:  # Omniconvert path
+        else:
+            # Fallback: try to parse as RAW pairs
             raw_pairs = self._basic_nonraw_to_raw(content)
             if not raw_pairs:
-                maybe = self._convert_with_omniconvert(content)
-                if maybe:
-                    raw_pairs = parse_raw_8x8(maybe)
-            if not raw_pairs:
-                QMessageBox.information(self, "Conversion needed", "Provide RAW pairs or configure Omniconvert in Settings.")
+                QMessageBox.information(self, "No codes", "No valid RAW pairs found.")
                 return
             pd = PnachData(crc=crc, serials=serials, title=title, raw_pairs=raw_pairs)
         self.preview.setPlainText(build_pnach(pd))
