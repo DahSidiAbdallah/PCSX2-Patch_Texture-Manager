@@ -1,0 +1,78 @@
+Running non-GUI tests (subprocess)
+..................                                                       [100%]
+18 passed in 0.93s
+Non-GUI pytest exit: 0
+
+Running GUI tests in subprocesses
+
+--- GUI TEST: tests/test_fetch_dialog.py::test_show_fetch_results_headless ---
+.                                                                        [100%]
+1 passed in 0.63s
+
+--- END ---
+
+--- GUI TEST: tests/test_gui_textures_tab.py::test_packinstallworker_signals ---
+.                                                                        [100%]
+============================== warnings summary ===============================
+tests\test_gui_textures_tab.py:52
+  C:\Users\DAH\Downloads\PCSX2 Patch_Texture Manager\tests\test_gui_textures_tab.py:52: PytestUnknownMarkWarning: Unknown pytest.mark.flaky - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.flaky(reruns=1)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1 passed, 1 warning in 0.72s
+
+--- END ---
+
+--- GUI TEST: tests/test_gui_textures_tab.py::test_dialog_shows_and_updates ---
+.                                                                        [100%]
+============================== warnings summary ===============================
+tests\test_gui_textures_tab.py:52
+  C:\Users\DAH\Downloads\PCSX2 Patch_Texture Manager\tests\test_gui_textures_tab.py:52: PytestUnknownMarkWarning: Unknown pytest.mark.flaky - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.flaky(reruns=1)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1 passed, 1 warning in 1.32s
+
+--- END ---
+
+--- GUI TEST: tests/test_packinstallworker_extra.py::test_packinstallworker_start_run_fallback ---
+.                                                                        [100%]
+1 passed in 0.65s
+
+--- END ---
+
+--- GUI TEST: tests/test_packinstallworker_extra.py::test_packinstallworker_retry_reporting ---
+.                                                                        [100%]
+1 passed in 0.64s
+
+--- END ---
+
+--- GUI TEST: tests/test_pnach_labeling.py::test_preserve_bracket_header_verbatim ---
+.                                                                        [100%]
+1 passed in 0.48s
+
+--- END ---
+
+--- GUI TEST: tests/test_pnach_labeling.py::test_split_header_with_remainder ---
+.                                                                        [100%]
+1 passed in 0.48s
+
+--- END ---
+
+--- GUI TEST: tests/test_pnach_labeling.py::test_split_three_merged_cheats_by_hints_and_prefixes ---
+.                                                                        [100%]
+1 passed in 0.47s
+
+--- END ---
+
+--- GUI TEST: tests/test_pnach_labeling.py::test_single_line_inline_hint_splitting ---
+.                                                                        [100%]
+1 passed in 0.47s
+
+--- END ---
+
+--- GUI TEST: tests/test_pnach_labeling.py::test_nested_bracket_headers_and_mixed_comments ---
+.                                                                        [100%]
+1 passed in 0.47s
+
+--- END ---

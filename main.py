@@ -18,11 +18,39 @@ import re
 import json
 from dataclasses import dataclass
 from typing import Optional, List, Tuple, Dict, Any
+from collections import deque
+import time
+import logging
 
 from PySide6.QtCore import Qt, QThread, Signal, QSize, QSettings, QTimer
 import sys
 from PySide6.QtGui import QIcon, QPixmap, QDragEnterEvent, QDropEvent, QAction
 import concurrent.futures
+
+# Registry to keep running QThread-based workers alive if callers don't hold a reference
+_ACTIVE_WORKERS: list = []
+
+# Ensure any remaining QThread workers are asked to quit and waited on at process exit to
+# reduce "QThread: Destroyed while thread '' is still running" warnings and possible
+# platform-specific crashes during interpreter shutdown.
+import atexit
+
+def _wait_active_workers(timeout_ms: int = 2000):
+    for w in list(_ACTIVE_WORKERS):
+        try:
+            if isinstance(w, QThread):
+                try:
+                    w.quit()
+                except Exception:
+                    pass
+                try:
+                    w.wait(timeout_ms)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+atexit.register(_wait_active_workers)
 
 # Optional for online features elsewhere; not required for offline resolver
 try:
@@ -36,6 +64,46 @@ from cheat_online import fetch_and_cache_cheats
 from bs4 import BeautifulSoup
 
 # ---------------------------- Helpers / Model ----------------------------
+
+# module logger for debug messages
+logger = logging.getLogger("pcsx2_manager")
+if not logger.handlers:
+    # default to WARNING to reduce noisy logs; callers can enable INFO/DEBUG when needed
+    logging.basicConfig(level=logging.WARNING)
+
+
+def fmt_speed(bps: Optional[float]) -> str:
+    if bps is None:
+        return '--'
+    try:
+        if bps <= 0:
+            return '0 B/s'
+        if bps < 1024:
+            return f"{bps:.0f} B/s"
+        if bps < 1024 * 1024:
+            return f"{bps/1024:.2f} KiB/s"
+        if bps < 1024 * 1024 * 1024:
+            return f"{bps/(1024*1024):.2f} MiB/s"
+        return f"{bps/(1024*1024*1024):.2f} GiB/s"
+    except Exception:
+        return '--'
+
+
+def fmt_eta(sec: Optional[float]) -> str:
+    if sec is None or sec == float('inf'):
+        return '--:--'
+    try:
+        s = int(max(0, int(sec)))
+        if s >= 3600:
+            hh = s // 3600
+            mm = (s % 3600) // 60
+            ss = s % 60
+            return f"{hh:02d}:{mm:02d}:{ss:02d}"
+        mm = s // 60
+        ss = s % 60
+        return f"{mm:02d}:{ss:02d}"
+    except Exception:
+        return '--:--'
 
 HEX8 = re.compile(r"^[0-9A-Fa-f]{8}$")
 SERIAL_RE = re.compile(
@@ -137,7 +205,7 @@ class CoverFetchWorker(QThread):
                 urlopen = None
             if urlopen is None:
                 try:
-                    print("[CoverFetchWorker] requests not available; aborting cover fetch")
+                    logger.debug("[CoverFetchWorker] requests not available; aborting cover fetch")
                 except Exception:
                     pass
                 self.fetch_failed.emit()
@@ -147,7 +215,7 @@ class CoverFetchWorker(QThread):
                     continue
                 try:
                     try:
-                        print(f"[CoverFetchWorker] probing: {candidate}")
+                        logger.debug(f"[CoverFetchWorker] probing: {candidate}")
                     except Exception:
                         pass
                     with urlopen(candidate, timeout=12) as resp:
@@ -175,7 +243,7 @@ class CoverFetchWorker(QThread):
                             return
                         except Exception as e:
                             try:
-                                print(f"[CoverFetchWorker] write failed: {e}")
+                                logger.debug(f"[CoverFetchWorker] write failed: {e}")
                             except Exception:
                                 pass
                             self.fetch_failed.emit()
@@ -183,7 +251,7 @@ class CoverFetchWorker(QThread):
                 except Exception:
                     continue
             try:
-                print(f"[CoverFetchWorker] all candidates failed: {self.urls}")
+                logger.debug(f"[CoverFetchWorker] all candidates failed: {self.urls}")
             except Exception:
                 pass
             self.fetch_failed.emit()
@@ -197,7 +265,7 @@ class CoverFetchWorker(QThread):
                 continue
             try:
                 try:
-                    print(f"[CoverFetchWorker] downloading: {candidate}")
+                    logger.debug(f"[CoverFetchWorker] downloading: {candidate}")
                 except Exception:
                     pass
                 resp = requests.get(candidate, timeout=12)
@@ -205,7 +273,7 @@ class CoverFetchWorker(QThread):
                 content = getattr(resp, 'content', None) or b''
                 clen = len(content)
                 try:
-                    print(f"[CoverFetchWorker] response: status={status} content_len={clen} for {candidate}")
+                    logger.debug(f"[CoverFetchWorker] response: status={status} content_len={clen} for {candidate}")
                 except Exception:
                     pass
                 if status == 200 and content:
@@ -366,6 +434,148 @@ def _score_title_candidate(text: str, html: Optional[str] = None) -> int:
     return score
 
 
+# Helpers extracted from build_pnach to reduce function complexity
+def ai_label_for_group(label_hint, codes, inline_hints=None, used_labels=None):
+    import re
+    from collections import Counter
+    used_labels = used_labels or set()
+    # Use comment if it's meaningful
+    if label_hint and not re.match(r"^(patch|cheat|code|modifier|fix|enable|disable|on|off|1|2|3|4|5|6|7|8|9|0| )+$", label_hint, re.I):
+        label = label_hint.strip()
+        if label not in used_labels:
+            used_labels.add(label)
+            return label
+    # Use inline comment if present and meaningful
+    if inline_hints:
+        meaningful = [h.strip() for h in inline_hints if h and not re.match(r"^(patch|cheat|code|modifier|fix|enable|disable|on|off|1|2|3|4|5|6|7|8|9|0| )+$", h, re.I)]
+        if meaningful:
+            cnt = Counter(meaningful)
+            label = cnt.most_common(1)[0][0]
+            if label not in used_labels:
+                used_labels.add(label)
+                return label
+    # Try to infer from code patterns and keywords.
+    code_text = " ".join(f"{a} {v}" for a, v in codes)
+    patterns = [
+        (r"infinite.?ammo|unlimited.?ammo|max.?ammo|all.?ammo|endless.?ammo|never.?reload|no.?reload", "Infinite Ammo"),
+        (r"one.?hit.?kill|1.?hit.?kill|kill.?in.?1|insta.?kill|instant.?kill|kill.?with.?one", "One-Hit Kill"),
+        (r"invincib|invulnerab|god.?mode|no.?damage|no.?hit|no.?death|immortal|never.?die|undying|unharmed|invincible", "Invincibility"),
+        (r"unlock.?char|all.?char|all.?fighters|all.?heroes|all.?players|all.?characters|every.?character|character.?select", "Unlock Characters"),
+        (r"unlock.?level|all.?level|all.?stages|all.?maps|every.?level|stage.?select|open.?all.?levels", "Unlock Levels/Stages"),
+        (r"unlock.?weapon|all.?weapon|all.?guns|all.?arms|every.?weapon|weapon.?select|all.?swords|all.?items.?unlocked", "Unlock All Weapons"),
+        (r"unlock.?item|all.?item|all.?cards|all.?gear|all.?equipment|every.?item|item.?select|all.?collectibles|all.?costumes|all.?outfits", "Unlock All Items"),
+        (r"exp|experience|level.?up|max.?level|lvl.?up|gain.?level|max.?exp|infinite.?exp|infinite.?experience|level.?999|level.?max", "EXP/Level Modifier"),
+        (r"stat.?max|max.?stat|all.?stat|full.?stat|999.?stat|255.?stat|max.?strength|max.?defense|max.?attack|max.?magic|max.?skill|max.?ability|all.?abilities|all.?skills|all.?stats", "Max Stats"),
+        (r"money|gil|zenny|cash|gold|coins|credits|points|score|infinite.?money|max.?money|max.?gold|max.?cash|max.?score|all.?points", "Money/Score Modifier"),
+        (r"health|hp|life|max.?hp|full.?hp|restore.?hp|heal|infinite.?hp|infinite.?health|never.?hurt|max.?life|auto.?heal|auto.?recovery", "Health Modifier"),
+        (r"mp|sp|ap|ep|energy|mana|magic.?points|infinite.?mp|max.?mp|infinite.?energy|max.?energy|full.?mp|full.?energy", "MP/Energy Modifier"),
+        (r"timer|time.?stop|freeze.?time|infinite.?time|no.?timer|time.?modifier|slow.?time|fast.?time|pause.?timer|no.?countdown", "Timer Modifier"),
+        (r"speed.?up|fast.?move|run.?fast|move.?speed|walk.?speed|move.?faster|faster.?movement|quick.?move|speed.?modifier|slow.?motion|slowmo|slow.?move", "Speed Modifier"),
+        (r"gravity|low.?gravity|zero.?gravity|float|fly|anti.?gravity|moon.?jump|super.?jump|high.?jump", "Gravity Modifier"),
+        (r"npc|enemy|ai|boss|monster|foe|all.?enemies|enemy.?modifier|enemy.?ai|boss.?rush|enemy.?stats|enemy.?hp|enemy.?damage", "NPC/Enemy Modifier"),
+        (r"distance|range|reach|attack.?range|long.?range|melee.?range|shoot.?range", "Distance/Range Modifier"),
+        (r"menu|pause|debug.?menu|test.?menu|secret.?menu|hidden.?menu|cheat.?menu|extra.?menu|bonus.?menu", "Menu/Debug Modifier"),
+        (r"latency|input.?lag|input.?latency|controller.?lag|controller.?delay|input.?delay", "Input Latency Modifier"),
+        (r"camera|fov|field.?of.?view|zoom|angle|perspective|camera.?control|free.?camera|camera.?hack|camera.?mod", "Camera Modifier"),
+        (r"music|sound|audio|bgm|sfx|mute|volume|no.?music|no.?sound|disable.?music|disable.?sound|soundtrack|background.?music", "Music/Sound Modifier"),
+        (r"language|region|pal|ntsc|japan|usa|europe|eng|fre|ger|ita|spa|por|rus|chi|kor|region.?free|region.?unlock|language.?select|multi.?language|all.?languages", "Language/Region Patch"),
+        (r"save.?anywhere|save.?menu|quick.?save|auto.?save|save.?state|save.?anytime|save.?hack|save.?modifier|save.?location", "Save Anywhere/Save Modifier"),
+        (r"walk.?through.?walls|no.?clip|noclip|clip.?off|ghost.?mode|walk.?anywhere|pass.?through.?walls|phase.?through.?walls|wall.?hack|collision.?off|collision.?hack", "No Clip/Walk Through Walls"),
+        (r"debug|test|dev.?mode|developer|debug.?mode|test.?mode|beta.?mode|prototype.?mode|dev.?tools|dev.?menu|debug.?tools", "Debug/Test Mode"),
+        (r"framerate|60.?fps|30.?fps|120.?fps|fps.?unlock|frame.?rate|unlocked.?fps|frame.?skip|frame.?rate.?modifier", "Framerate Modifier"),
+        (r"fix|patch|workaround|bypass|skip|crash|freeze|hang|softlock|hardlock|anti.?crash|anti.?freeze|skip.?scene|skip.?cutscene|skip.?intro|skip.?logo|skip.?movie|skip.?video", "Fix/Bypass Patch"),
+        (r"cheat|enable|disable|toggle|on.?off|activate|deactivate|switch|turn.?on|turn.?off", "Cheat Toggle"),
+        (r"^20[0-9A-F]{6}", "Simple 8-bit Patch"),
+        (r"^10[0-9A-F]{6}", "16-bit Patch"),
+        (r"^00[0-9A-F]{6}", "8-bit Patch"),
+        (r"^E0[0-9A-F]{6}", "Conditional Patch"),
+        (r"^D0[0-9A-F]{6}", "Conditional Patch"),
+        (r"^2[0-9A-F]{7}", "Write Patch"),
+        (r"^1[0-9A-F]{7}", "Write Patch"),
+        (r"^0[0-9A-F]{7}", "Write Patch"),
+    ]
+    if (not label_hint) and (not inline_hints or not any(h and not re.match(r"^(patch|cheat|code|modifier|fix|enable|disable|on|off|1|2|3|4|5|6|7|8|9|0| )+$", h, re.I) for h in inline_hints)):
+        for pat, name in patterns:
+            if re.search(pat, code_text, re.I):
+                if name not in used_labels:
+                    used_labels.add(name)
+                    return name
+    if len(codes) == 1:
+        a, v = codes[0]
+        label = f"Patch {a[-6:]}={v[-6:]}"
+        if label not in used_labels:
+            used_labels.add(label)
+            return label
+    n = len(used_labels) + 1
+    label = f"Cheat Group {n} ({len(codes)} codes)"
+    used_labels.add(label)
+    return label
+
+
+def split_group_if_mixed(label_hint, codes, hints):
+    import re
+    if not codes or len(codes) <= 1:
+        return [(label_hint, codes, hints)]
+
+    def _is_trivial_hint(h):
+        return not h or re.match(r"^(patch|cheat|code|modifier|fix|enable|disable|on|off|1|2|3|4|5|6|7|8|9|0| )+$", h, re.I)
+
+    meaningful_keys = [ (h.strip() if h and not _is_trivial_hint(h) else "__NO_HINT__") for h in hints ]
+    if any(k != "__NO_HINT__" for k in meaningful_keys):
+        res = []
+        cur_codes = []
+        cur_hints = []
+        cur_key = meaningful_keys[0]
+        for (a,v), k, h in zip(codes, meaningful_keys, hints):
+            if k != cur_key and cur_codes:
+                res.append((None if cur_key=="__NO_HINT__" else cur_key, list(cur_codes), list(cur_hints)))
+                cur_codes = []
+                cur_hints = []
+                cur_key = k
+            cur_codes.append((a,v))
+            cur_hints.append(h)
+        if cur_codes:
+            res.append((None if cur_key=="__NO_HINT__" else cur_key, list(cur_codes), list(cur_hints)))
+        if len(res) > 1:
+            min_run = 1
+            i = 0
+            merged = []
+            while i < len(res):
+                key, rcodes, rhints = res[i]
+                if len(rcodes) < min_run:
+                    if merged:
+                        pk, pcodes, phints = merged[-1]
+                        merged[-1] = (pk, pcodes + rcodes, phints + rhints)
+                    else:
+                        if i+1 < len(res):
+                            nk, ncodes, nhints = res[i+1]
+                            res[i+1] = (nk, rcodes + ncodes, rhints + nhints)
+                        else:
+                            merged.append((key, rcodes, rhints))
+                    i += 1
+                    continue
+                else:
+                    merged.append((key, rcodes, rhints))
+                    i += 1
+            if len(merged) > 1:
+                return merged
+    prefixes = [a[:2] for a, _ in codes]
+    uniq_pref = sorted(set(prefixes), key=lambda x: prefixes.count(x), reverse=True)
+    if len(uniq_pref) > 1 and len(codes) >= 4:
+        split_map = {}
+        for p in uniq_pref:
+            split_map[p] = []
+        for a, v in codes:
+            split_map[a[:2]].append((a, v))
+        res = []
+        for p in uniq_pref:
+            grp = split_map.get(p, [])
+            if grp:
+                res.append((None, grp, [None]*len(grp)))
+        return res
+    return [(label_hint, codes, hints)]
+
+
 def _set_label_pixmap_exact(label: 'QLabel', pixmap: 'QPixmap', max_dim: int = 420):
     """Scale pixmap down to fit within max_dim x max_dim, keep aspect ratio.
     Do not scale up small images; set the label fixed size to the resulting pixmap size
@@ -496,100 +706,18 @@ def build_pnach(pd: PnachData) -> str:
     if pd.comments:
         out.extend(pd.comments)
     out.append("")
-    # --- AI-based label generation for each cheat group ---
-    import re
-    
-    def ai_label_for_group(label_hint, codes, inline_hints=None, used_labels=None):
-        used_labels = used_labels or set()
-        # Use comment if it's meaningful
-        if label_hint and not re.match(r"^(patch|cheat|code|modifier|fix|enable|disable|on|off|1|2|3|4|5|6|7|8|9|0| )+$", label_hint, re.I):
-            label = label_hint.strip()
-            if label not in used_labels:
-                used_labels.add(label)
-                return label
-        # Use inline comment if present and meaningful
-        if inline_hints:
-            # Collate non-trivial inline hints and prefer the most common
-            meaningful = [h.strip() for h in inline_hints if h and not re.match(r"^(patch|cheat|code|modifier|fix|enable|disable|on|off|1|2|3|4|5|6|7|8|9|0| )+$", h, re.I)]
-            if meaningful:
-                # pick the most frequent meaningful hint
-                from collections import Counter
-                cnt = Counter(meaningful)
-                label = cnt.most_common(1)[0][0]
-                if label not in used_labels:
-                    used_labels.add(label)
-                    return label
-        # Try to infer from code patterns and keywords. Use pattern-based labels only as a fallback
-        # when no human-friendly hint is available.
-        code_text = " ".join(f"{a} {v}" for a,v in codes)
-        patterns = [
-            # Gameplay/character (expanded synonyms)
-            (r"infinite.?ammo|unlimited.?ammo|max.?ammo|all.?ammo|endless.?ammo|never.?reload|no.?reload", "Infinite Ammo"),
-            (r"one.?hit.?kill|1.?hit.?kill|kill.?in.?1|insta.?kill|instant.?kill|kill.?with.?one", "One-Hit Kill"),
-            (r"invincib|invulnerab|god.?mode|no.?damage|no.?hit|no.?death|immortal|never.?die|undying|unharmed|invincible", "Invincibility"),
-            (r"unlock.?char|all.?char|all.?fighters|all.?heroes|all.?players|all.?characters|every.?character|character.?select", "Unlock Characters"),
-            (r"unlock.?level|all.?level|all.?stages|all.?maps|every.?level|stage.?select|open.?all.?levels", "Unlock Levels/Stages"),
-            (r"unlock.?weapon|all.?weapon|all.?guns|all.?arms|every.?weapon|weapon.?select|all.?swords|all.?items.?unlocked", "Unlock All Weapons"),
-            (r"unlock.?item|all.?item|all.?cards|all.?gear|all.?equipment|every.?item|item.?select|all.?collectibles|all.?costumes|all.?outfits", "Unlock All Items"),
-            (r"exp|experience|level.?up|max.?level|lvl.?up|gain.?level|max.?exp|infinite.?exp|infinite.?experience|level.?999|level.?max", "EXP/Level Modifier"),
-            (r"stat.?max|max.?stat|all.?stat|full.?stat|999.?stat|255.?stat|max.?strength|max.?defense|max.?attack|max.?magic|max.?skill|max.?ability|all.?abilities|all.?skills|all.?stats", "Max Stats"),
-            (r"money|gil|zenny|cash|gold|coins|credits|points|score|infinite.?money|max.?money|max.?gold|max.?cash|max.?score|all.?points", "Money/Score Modifier"),
-            (r"health|hp|life|max.?hp|full.?hp|restore.?hp|heal|infinite.?hp|infinite.?health|never.?hurt|max.?life|auto.?heal|auto.?recovery", "Health Modifier"),
-            (r"mp|sp|ap|ep|energy|mana|magic.?points|infinite.?mp|max.?mp|infinite.?energy|max.?energy|full.?mp|full.?energy", "MP/Energy Modifier"),
-            (r"timer|time.?stop|freeze.?time|infinite.?time|no.?timer|time.?modifier|slow.?time|fast.?time|pause.?timer|no.?countdown", "Timer Modifier"),
-            (r"speed.?up|fast.?move|run.?fast|move.?speed|walk.?speed|move.?faster|faster.?movement|quick.?move|speed.?modifier|slow.?motion|slowmo|slow.?move", "Speed Modifier"),
-            (r"gravity|low.?gravity|zero.?gravity|float|fly|anti.?gravity|moon.?jump|super.?jump|high.?jump", "Gravity Modifier"),
-            (r"npc|enemy|ai|boss|monster|foe|all.?enemies|enemy.?modifier|enemy.?ai|boss.?rush|enemy.?stats|enemy.?hp|enemy.?damage", "NPC/Enemy Modifier"),
-            (r"distance|range|reach|attack.?range|long.?range|melee.?range|shoot.?range", "Distance/Range Modifier"),
-            (r"menu|pause|debug.?menu|test.?menu|secret.?menu|hidden.?menu|cheat.?menu|extra.?menu|bonus.?menu", "Menu/Debug Modifier"),
-            (r"latency|input.?lag|input.?latency|controller.?lag|controller.?delay|input.?delay", "Input Latency Modifier"),
-            (r"camera|fov|field.?of.?view|zoom|angle|perspective|camera.?control|free.?camera|camera.?hack|camera.?mod", "Camera Modifier"),
-            (r"music|sound|audio|bgm|sfx|mute|volume|no.?music|no.?sound|disable.?music|disable.?sound|soundtrack|background.?music", "Music/Sound Modifier"),
-            (r"language|region|pal|ntsc|japan|usa|europe|eng|fre|ger|ita|spa|por|rus|chi|kor|region.?free|region.?unlock|language.?select|multi.?language|all.?languages", "Language/Region Patch"),
-            (r"save.?anywhere|save.?menu|quick.?save|auto.?save|save.?state|save.?anytime|save.?hack|save.?modifier|save.?location", "Save Anywhere/Save Modifier"),
-            (r"walk.?through.?walls|no.?clip|noclip|clip.?off|ghost.?mode|walk.?anywhere|pass.?through.?walls|phase.?through.?walls|wall.?hack|collision.?off|collision.?hack", "No Clip/Walk Through Walls"),
-            (r"debug|test|dev.?mode|developer|debug.?mode|test.?mode|beta.?mode|prototype.?mode|dev.?tools|dev.?menu|debug.?tools", "Debug/Test Mode"),
-            (r"framerate|60.?fps|30.?fps|120.?fps|fps.?unlock|frame.?rate|unlocked.?fps|frame.?skip|frame.?rate.?modifier", "Framerate Modifier"),
-            (r"fix|patch|workaround|bypass|skip|crash|freeze|hang|softlock|hardlock|anti.?crash|anti.?freeze|skip.?scene|skip.?cutscene|skip.?intro|skip.?logo|skip.?movie|skip.?video", "Fix/Bypass Patch"),
-            (r"cheat|enable|disable|toggle|on.?off|activate|deactivate|switch|turn.?on|turn.?off", "Cheat Toggle"),
-            # Address/value hints (common cheat code address/value patterns)
-            (r"^20[0-9A-F]{6}", "Simple 8-bit Patch"),
-            (r"^10[0-9A-F]{6}", "16-bit Patch"),
-            (r"^00[0-9A-F]{6}", "8-bit Patch"),
-            (r"^E0[0-9A-F]{6}", "Conditional Patch"),
-            (r"^D0[0-9A-F]{6}", "Conditional Patch"),
-            (r"^2[0-9A-F]{7}", "Write Patch"),
-            (r"^1[0-9A-F]{7}", "Write Patch"),
-            (r"^0[0-9A-F]{7}", "Write Patch"),
-        ]
-        # Only consider address/value pattern labels if there were no label_hint and no meaningful inline hints
-        if (not label_hint) and (not inline_hints or not any(h and not re.match(r"^(patch|cheat|code|modifier|fix|enable|disable|on|off|1|2|3|4|5|6|7|8|9|0| )+$", h, re.I) for h in inline_hints)):
-            for pat, name in patterns:
-                if re.search(pat, code_text, re.I):
-                    if name not in used_labels:
-                        used_labels.add(name)
-                        return name
-        # Fallback: summarize by address/value
-        if len(codes) == 1:
-            a, v = codes[0]
-            label = f"Patch {a[-6:]}={v[-6:]}"
-            if label not in used_labels:
-                used_labels.add(label)
-                return label
-        # Ensure unique fallback
-        n = len(used_labels) + 1
-        label = f"Cheat Group {n} ({len(codes)} codes)"
-        used_labels.add(label)
-        return label
+
+    # Use module-level helpers for label inference and group splitting to keep this function concise
+    from collections import Counter
 
     # Robust grouping: split by blank lines, comment headers, bracket headers, or contiguous patch lines
-    # Use pd.items to preserve original ordering of comments and patch lines
     lines = list(pd.items) if getattr(pd, 'items', None) else []
 
     groups = []
     current_label = None
     current_group = []
     inline_hints = []
+
     def flush_group():
         nonlocal current_label, current_group, inline_hints
         if current_group:
@@ -601,11 +729,9 @@ def build_pnach(pd: PnachData) -> str:
     BRACKET_HDR = re.compile(r"^\s*\[(.*?)\]\s*$")
     for item in lines:
         if isinstance(item, str):
-            # Preserve explicit bracket headers like: [Cheats/8-bit Patch] or [50/60 FPS]
             mbr = BRACKET_HDR.match(item)
             if mbr:
                 flush_group()
-                # store a marker label to indicate this was an original raw bracket header
                 current_label = "__RAW_LITERAL__:" + mbr.group(1).strip()
                 continue
             m = re.match(r"\s*(//|#|;)\s*([^:]+):?", item)
@@ -615,13 +741,11 @@ def build_pnach(pd: PnachData) -> str:
             elif item.strip() == "":
                 flush_group()
         elif isinstance(item, tuple):
-            # item may be (addr, val) or (addr, val, hint)
             if len(item) == 3:
                 addr, val, hint = item
             else:
                 addr, val = item
                 hint = None
-                # legacy: try to extract inline comment from val
                 m = re.search(r"//(.+)$", val)
                 if m:
                     hint = m.group(1).strip()
@@ -630,84 +754,7 @@ def build_pnach(pd: PnachData) -> str:
             inline_hints.append(hint)
     flush_group()
 
-    # Heuristic splitting: sometimes multiple distinct cheats are merged into a single group
-    # (no blank lines / no explicit headers). Attempt to split large mixed groups by
-    # meaningful inline hints or by address prefix clustering so each logical cheat is separated.
-    def _is_trivial_hint(h):
-        return not h or re.match(r"^(patch|cheat|code|modifier|fix|enable|disable|on|off|1|2|3|4|5|6|7|8|9|0| )+$", h, re.I)
-
-    def split_group_if_mixed(label_hint, codes, hints):
-        # Return list of (label_hint, codes, hints) - possibly split
-        if not codes or len(codes) <= 1:
-            return [(label_hint, codes, hints)]
-        # If multiple distinct meaningful inline hints exist, split by contiguous runs of hints
-        meaningful_keys = [ (h.strip() if h and not _is_trivial_hint(h) else "__NO_HINT__") for h in hints ]
-        # If there are meaningful hint keys (not all __NO_HINT__), split by contiguous runs of keys
-        if any(k != "__NO_HINT__" for k in meaningful_keys):
-            res = []
-            cur_codes = []
-            cur_hints = []
-            cur_key = meaningful_keys[0]
-            for (a,v), k, h in zip(codes, meaningful_keys, hints):
-                if k != cur_key and cur_codes:
-                    res.append((None if cur_key=="__NO_HINT__" else cur_key, list(cur_codes), list(cur_hints)))
-                    cur_codes = []
-                    cur_hints = []
-                    cur_key = k
-                cur_codes.append((a,v))
-                cur_hints.append(h)
-            if cur_codes:
-                res.append((None if cur_key=="__NO_HINT__" else cur_key, list(cur_codes), list(cur_hints)))
-            # If splitting produced more than one group, merge very small runs into neighbors
-            if len(res) > 1:
-                # merge threshold: runs smaller than this will be merged into the larger neighbor
-                # Lowered to 1 to allow single-line meaningful hints to form their own groups
-                min_run = 1
-                i = 0
-                merged = []
-                while i < len(res):
-                    key, rcodes, rhints = res[i]
-                    if len(rcodes) < min_run:
-                        # try merge into previous if exists, else into next
-                        if merged:
-                            # merge into previous
-                            pk, pcodes, phints = merged[-1]
-                            merged[-1] = (pk, pcodes + rcodes, phints + rhints)
-                        else:
-                            # merge into next
-                            if i+1 < len(res):
-                                nk, ncodes, nhints = res[i+1]
-                                res[i+1] = (nk, rcodes + ncodes, rhints + nhints)
-                            else:
-                                # single tiny run at end, append as-is
-                                merged.append((key, rcodes, rhints))
-                        i += 1
-                        continue
-                    else:
-                        merged.append((key, rcodes, rhints))
-                        i += 1
-                # If merging reduced to multiple groups, return merged
-                if len(merged) > 1:
-                    return merged
-        # Fallback clustering by top-byte prefix if group looks mixed
-        prefixes = [a[:2] for a, _ in codes]
-        uniq_pref = sorted(set(prefixes), key=lambda x: prefixes.count(x), reverse=True)
-        if len(uniq_pref) > 1 and len(codes) >= 4:
-            # split preserving order by prefix groups
-            split_map = {}
-            for p in uniq_pref:
-                split_map[p] = []
-            for a, v in codes:
-                split_map[a[:2]].append((a, v))
-            res = []
-            for p in uniq_pref:
-                grp = split_map.get(p, [])
-                if grp:
-                    res.append((None, grp, [None]*len(grp)))
-            return res
-        return [(label_hint, codes, hints)]
-
-    # Apply splitting pass
+    # Apply splitting pass using module helper
     post_groups = []
     for label, codes, hints in groups:
         splits = split_group_if_mixed(label, codes, hints)
@@ -717,14 +764,12 @@ def build_pnach(pd: PnachData) -> str:
 
     used_labels = set()
     if not groups:
-        # fallback: all codes in one group
         label = ai_label_for_group(pd.title, pd.raw_pairs, used_labels=used_labels)
         out.append(f"[Cheats/{label}]")
         for addr, val in pd.raw_pairs:
             out.append(f"patch=1,EE,{addr},extended,{val}")
     else:
         for idx, (label, codes, hints) in enumerate(groups, 1):
-            # If the label was an original bracket header marker, emit it verbatim
             if label and isinstance(label, str) and label.startswith("__RAW_LITERAL__:"):
                 literal = label.split(':', 1)[1]
                 out.append(f"[{literal}]")
@@ -982,12 +1027,12 @@ class SingleOnlineLookup(QThread):
 
     def run(self):
         try:
-            print(f"[SingleOnlineLookup] starting lookup for {self.serial}")
+            logger.debug(f"[SingleOnlineLookup] starting lookup for {self.serial}")
         except Exception:
             pass
         if requests is None:
             try:
-                print("[SingleOnlineLookup] requests missing, aborting")
+                logger.debug("[SingleOnlineLookup] requests missing, aborting")
             except Exception:
                 pass
             self.failed.emit()
@@ -1006,20 +1051,20 @@ class SingleOnlineLookup(QThread):
         try:
             for url in url_templates:
                 try:
-                    print(f"[SingleOnlineLookup] fetching {url} for {self.serial}")
+                    logger.debug(f"[SingleOnlineLookup] fetching {url} for {self.serial}")
                 except Exception:
                     pass
                 try:
                     resp = requests.get(url, headers=HEADERS, timeout=10)
                 except Exception as e:
                     try:
-                        print(f"[SingleOnlineLookup] request failed: {e}")
+                        logger.debug(f"[SingleOnlineLookup] request failed: {e}")
                     except Exception:
                         pass
                     continue
                 if resp.status_code != 200 or not resp.text:
                     try:
-                        print(f"[SingleOnlineLookup] bad status {resp.status_code} for {url}")
+                        logger.debug(f"[SingleOnlineLookup] bad status {resp.status_code} for {url}")
                     except Exception:
                         pass
                     continue
@@ -1033,7 +1078,7 @@ class SingleOnlineLookup(QThread):
                     if pos == -1:
                         continue
                     try:
-                        print(f"[SingleOnlineLookup] serial {self.serial} found in page {url} at pos {pos}")
+                        logger.debug(f"[SingleOnlineLookup] serial {self.serial} found in page {url} at pos {pos}")
                     except Exception:
                         pass
                     window = html[max(0, pos-3000): pos+3000]
@@ -1043,7 +1088,7 @@ class SingleOnlineLookup(QThread):
                         cand = BeautifulSoup(m.group(1), 'html.parser').get_text(strip=True)
                         if cand and len(cand) > 3 and cand.upper() not in ('INFO', 'TITLE'):
                             try:
-                                print(f"[SingleOnlineLookup] candidate title (td col3): {cand}")
+                                logger.debug(f"[SingleOnlineLookup] candidate title (td col3): {cand}")
                             except Exception:
                                 pass
                             self.found.emit(cand)
@@ -1065,7 +1110,7 @@ class SingleOnlineLookup(QThread):
                             title = BeautifulSoup(c, 'html.parser').get_text(strip=True)
                             if title:
                                 try:
-                                    print(f"[SingleOnlineLookup] fallback candidate: {title}")
+                                    logger.debug(f"[SingleOnlineLookup] fallback candidate: {title}")
                                 except Exception:
                                     pass
                                 self.found.emit(title)
@@ -2123,6 +2168,102 @@ class CheatsTab(QWidget):
 
 
 class TexturesTab(QWidget):
+    class PackInstallWorker(QThread):
+        """Background worker that wraps the headless installer so tests and the UI
+        can run installs in a QThread and receive progress signals. Exposed as
+        TexturesTab.PackInstallWorker for tests.
+        """
+        progressed = Signal(int, int, str)
+        file_progressed = Signal(int, int, str, int, int)
+        finished = Signal(int, list)
+        failed = Signal(str)
+
+        def __init__(self, items, base, target_hint: str = '', installer=None, parent=None):
+            super().__init__(parent)
+            self.items = items
+            self.base = base
+            self.target_hint = target_hint
+            # installer is an optional callable to perform installs; if None, run will import the module
+            self.installer = installer
+            self._cancel = False
+
+        def cancel(self):
+            self._cancel = True
+
+        def run(self):
+            # Use provided installer callable when available to avoid importing inside worker thread
+            perform_pack_installs = self.installer
+            if perform_pack_installs is None:
+                try:
+                    from textures_install import perform_pack_installs
+                except Exception as e:
+                    try:
+                        self.failed.emit(str(e))
+                    except Exception:
+                        pass
+                    return
+
+            def progress_cb(c, t, d):
+                try:
+                    self.progressed.emit(c, t, d)
+                except Exception:
+                    pass
+
+            def file_progress_cb(idx, total_items, display, written, total_bytes):
+                try:
+                    self.file_progressed.emit(idx, total_items, display, written, total_bytes)
+                except Exception:
+                    pass
+
+            try:
+                installed, failures = perform_pack_installs(
+                    self.items,
+                    self.base,
+                    target_hint=self.target_hint,
+                    progress_cb=progress_cb,
+                    cancel_cb=lambda: self._cancel,
+                    file_progress_cb=file_progress_cb,
+                )
+                try:
+                    self.finished.emit(installed, failures)
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    self.failed.emit(str(e))
+                except Exception:
+                    pass
+
+        def start(self):
+            # If no QApplication (tests that use this worker without GUI), run synchronously
+            try:
+                from PySide6.QtWidgets import QApplication
+                app = QApplication.instance()
+            except Exception:
+                app = None
+            if app is None:
+                try:
+                    self.run()
+                except Exception:
+                    pass
+                return
+            # Ensure a strong reference so the QThread object isn't GC'd while running
+            try:
+                _ACTIVE_WORKERS.append(self)
+                def _on_finish():
+                    try:
+                        _ACTIVE_WORKERS.remove(self)
+                    except Exception:
+                        pass
+                    try:
+                        self.deleteLater()
+                    except Exception:
+                        pass
+                self.finished.connect(_on_finish)
+            except Exception:
+                pass
+            super().start()
+
     def _import_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder", os.path.expanduser("~"))
         if folder:
@@ -2558,72 +2699,268 @@ class TexturesTab(QWidget):
         if not base or not os.path.isdir(base):
             QMessageBox.warning(self, "Missing textures folder", "Please set a valid PCSX2 textures folder path.")
             return
-        # Confirm bulk install
-        if QMessageBox.question(self, 'Install Selected', f'Install {len(items)} selected packs into:\n{base}?') != QMessageBox.StandardButton.Yes:
-            return
-        # Iterate and call existing install logic per item but avoid repeated confirmations
+
+        install_items = []
         for it in items:
             try:
-                src = it.data(0, Qt.UserRole)
-                if not src:
-                    continue
-                # use similar logic as _install_selected_pack but non-interactive
-                temp_dir = None
-                try:
-                    if os.path.isfile(src) and src.lower().endswith('.zip'):
-                        temp_dir = os.path.join(self._thumb_cache, "_zip_extract")
-                        if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
-                        os.makedirs(temp_dir, exist_ok=True)
-                        with zipfile.ZipFile(src, 'r') as z:
-                            z.extractall(temp_dir)
-                        src_folder = temp_dir
-                    else:
-                        src_folder = src
-
-                    repl = os.path.join(src_folder, 'replacements')
-                    if os.path.isdir(repl):
-                        chosen = self._find_replacements_in_tree(repl) or repl
-                    else:
-                        chosen = self._find_replacements_in_tree(src_folder) or src_folder
-                    if not chosen:
-                        continue
-                    # infer target name
-                    display = it.text(0)
-                    m = SERIAL_RE.search(display or '')
-                    serial_candidate = m.group(0).upper() if m else None
-                    if not serial_candidate:
-                        for root, dirs, files in os.walk(chosen):
-                            for nm in dirs + files:
-                                mm = SERIAL_RE.search(nm)
-                                if mm:
-                                    serial_candidate = mm.group(0).upper()
-                                    break
-                            if serial_candidate: break
-                    if self.target_folder_name.text().strip():
-                        target_name = self.target_folder_name.text().strip()
-                    elif serial_candidate:
-                        target_name = serial_candidate
-                    else:
-                        target_name = os.path.basename(display)
-                    target_name = os.path.basename(target_name)
-                    dst = os.path.join(base, target_name)
-                    if os.path.exists(dst):
-                        try:
-                            shutil.rmtree(dst)
-                        except Exception:
-                            continue
-                    shutil.copytree(chosen, dst)
-                finally:
-                    if temp_dir and os.path.exists(temp_dir):
-                        try: shutil.rmtree(temp_dir)
-                        except Exception: pass
+                src = it.data(0, Qt.UserRole) or ''
+                install_items.append((it.text(0) or '', src))
             except Exception:
                 continue
-        QMessageBox.information(self, 'Installed', f'Installed {len(items)} packs into:\n{base}')
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Installing Packs')
+        dlg.setModal(False)
+        v = QVBoxLayout(dlg)
+        overall_label = QLabel('Overall:')
+        overall_bar = QProgressBar()
+        overall_bar.setRange(0, 100)
+        per_label = QLabel('Current:')
+        per_bar = QProgressBar()
+        per_bar.setRange(0, 100)
+        eta_label = QLabel('ETA: --:--')
+        failures_text = QTextEdit()
+        failures_text.setReadOnly(True)
+        failures_text.setMaximumHeight(120)
+        btn_row = QWidget()
+        bh = QHBoxLayout(btn_row)
+        retry_btn = QPushButton('Retry Failures')
+        retry_btn.setEnabled(False)
+        close_btn = QPushButton('Close')
+        bh.addWidget(retry_btn)
+        bh.addWidget(close_btn)
+
+        v.addWidget(overall_label)
+        v.addWidget(overall_bar)
+        v.addWidget(per_label)
+        v.addWidget(per_bar)
+        v.addWidget(eta_label)
+        v.addWidget(failures_text)
+        v.addWidget(btn_row)
+        dlg.show()
+
+        state = {
+            'samples': deque(maxlen=6),
+            'ema': None,
+            'pack_totals': {},
+            'current_idx': 0,
+            'last_ts': None,
+            'failures': [],
+        }
+
+        target_hint = self.target_folder_name.text().strip() or ''
+        # Use a plain threading.Thread for the dialog installer to avoid Qt QThread / COM issues on Windows.
+        import threading
+
         try:
-            self.scan_installed_textures()
+            from textures_install import perform_pack_installs as _perform_pack_installs
         except Exception:
-            pass
+            _perform_pack_installs = None
+
+        class _DialogWorker:
+            def __init__(self, items, base, target_hint, installer):
+                self.items = items
+                self.base = base
+                self.target_hint = target_hint
+                self.installer = installer
+                self._cancel = False
+                self._thread = None
+
+            def cancel(self):
+                self._cancel = True
+
+            def is_running(self):
+                return self._thread is not None and self._thread.is_alive()
+
+            def start(self, progress_cb, file_progress_cb, finished_cb, failed_cb):
+                def _run():
+                    try:
+                        if not self.installer:
+                            # import on main thread failed earlier; try import here as fallback
+                            from textures_install import perform_pack_installs as _inst
+                        else:
+                            _inst = self.installer
+                        def _cancel_cb():
+                            return self._cancel
+
+                        def _progress_cb(c, t, d):
+                            # marshal UI update into Qt main thread
+                            QTimer.singleShot(0, lambda: progress_cb(c, t, d))
+
+                        def _file_progress_cb(idx, total_items, display, written, total_bytes):
+                            QTimer.singleShot(0, lambda: file_progress_cb(idx, total_items, display, written, total_bytes))
+
+                        installed, failures = _inst(self.items, self.base, target_hint=self.target_hint, progress_cb=_progress_cb, cancel_cb=_cancel_cb, file_progress_cb=_file_progress_cb)
+                        QTimer.singleShot(0, lambda: finished_cb(installed, failures))
+                    except Exception as e:
+                        QTimer.singleShot(0, lambda: failed_cb(str(e)))
+                # If running under pytest, run inline to avoid Windows COM / thread issues in test environment
+                if os.environ.get('PYTEST_CURRENT_TEST'):
+                    _run()
+                    return
+                th = threading.Thread(target=_run, daemon=True)
+                self._thread = th
+                th.start()
+
+        worker = _DialogWorker(install_items, base, target_hint, _perform_pack_installs)
+        dlg._worker = worker
+
+        def on_progress(c, t, d):
+            try:
+                overall_bar.setValue(int((c / max(1, t)) * 100))
+                per_label.setText(f"Current: {d}")
+                now = time.time()
+                if state['last_ts'] is None:
+                    state['last_ts'] = now
+                remaining_bytes = 0
+                for idx_key, tot in state['pack_totals'].items():
+                    if idx_key >= c:
+                        remaining_bytes += tot
+                ema = state['ema']
+                sec = remaining_bytes / ema if ema and ema > 0 else None
+                eta_label.setText(f"ETA: {fmt_eta(sec)}")
+            except Exception:
+                pass
+
+        def on_file_progress(idx, total_items, display, written, total_bytes):
+            try:
+                if total_bytes:
+                    per_bar.setValue(int((written / max(1, total_bytes)) * 100))
+                now = time.time()
+                last = state.get('last_ts') or now
+                dt = max(1e-6, now - last)
+                state['last_ts'] = now
+                try:
+                    state['pack_totals'][idx] = total_bytes
+                except Exception:
+                    pass
+                try:
+                    sample_bps = written / dt if dt > 0 else 0
+                    ema = state.get('ema')
+                    if ema:
+                        lo = max(1.0, ema * 0.1)
+                        hi = max(lo, ema * 10.0)
+                        sample_bps = max(lo, min(hi, sample_bps))
+                    state['samples'].append(sample_bps)
+                    alpha = 0.4
+                    s = state['ema']
+                    if s is None:
+                        s = sample_bps
+                    else:
+                        s = alpha * sample_bps + (1 - alpha) * s
+                    state['ema'] = s
+                except Exception:
+                    pass
+                ema = state.get('ema')
+                remaining = 0
+                for k, v in state.get('pack_totals', {}).items():
+                    if k >= idx:
+                        remaining += v
+                sec = remaining / ema if ema and ema > 0 else None
+                eta_label.setText(f"ETA: {fmt_eta(sec)} ({fmt_speed(ema)})")
+            except Exception:
+                pass
+
+        def on_finished(installed, failures):
+            try:
+                if failures:
+                    state['failures'] = failures
+                    failures_text.clear()
+                    for f in failures:
+                        try:
+                            failures_text.append(str(f))
+                        except Exception:
+                            pass
+                    retry_btn.setEnabled(True)
+                else:
+                    retry_btn.setEnabled(False)
+                try:
+                    dlg.hide()
+                except Exception:
+                    pass
+                try:
+                    QTimer.singleShot(50, dlg.close)
+                except Exception:
+                    try:
+                        dlg.close()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        def on_failed(msg):
+            try:
+                QMessageBox.critical(self, 'Install failed', msg)
+                dlg.close()
+            except Exception:
+                pass
+
+        def do_retry():
+            retry_items = [(d, s) for (d, s, msg) in state.get('failures', [])]
+            if not retry_items:
+                return
+            failures_text.clear()
+            retry_btn.setEnabled(False)
+            new_worker = _DialogWorker(retry_items, base, target_hint, _perform_pack_installs)
+            dlg._worker = new_worker
+            new_worker.start(on_progress, on_file_progress, on_finished, on_failed)
+
+        retry_btn.clicked.connect(do_retry)
+
+        def _close_and_cancel():
+            try:
+                worker.cancel()
+            except Exception:
+                pass
+            try:
+                dlg.hide()
+            except Exception:
+                pass
+            try:
+                dlg.close()
+            except Exception:
+                pass
+
+        close_btn.clicked.connect(_close_and_cancel)
+
+        # Start the dialog worker
+        worker.start(on_progress, on_file_progress, on_finished, on_failed)
+
+        # Watchdog: ensure the dialog closes when the worker stops even if signals are missed
+        def _watch_worker():
+            try:
+                w = getattr(dlg, '_worker', None)
+                if not w:
+                    try:
+                        dlg.hide()
+                        QTimer.singleShot(50, dlg.close)
+                    except Exception:
+                        pass
+                    return
+                running = False
+                try:
+                    running = bool(w.isRunning())
+                except Exception:
+                    running = False
+                if not running:
+                    try:
+                        dlg.hide()
+                    except Exception:
+                        pass
+                    try:
+                        QTimer.singleShot(50, dlg.close)
+                    except Exception:
+                        try:
+                            dlg.close()
+                        except Exception:
+                            pass
+                    return
+                # re-schedule
+                QTimer.singleShot(100, _watch_worker)
+            except Exception:
+                pass
+
+        QTimer.singleShot(200, _watch_worker)
 
     def import_folder_path(self, src: str):
         base = self.textures_dir.text().strip()
@@ -3147,7 +3484,8 @@ class TexturesTab(QWidget):
                 it.setToolTip(0, tt)
                 it.setIcon(0, QIcon())
                 try:
-                    print(f"[TexturesTab] adding item: display='{display}' title_col='{title_col}' path='{pack_dir}'")
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"[TexturesTab] adding item: display='{display}' title_col='{title_col}' path='{pack_dir}'")
                 except Exception:
                     pass
                 self.packs_list.addTopLevelItem(it)
@@ -3205,7 +3543,8 @@ class TexturesTab(QWidget):
         has_serial_children = bool(child_dirs)
         try:
             if child_dirs:
-                print(f"[TexturesTab] detected serial children under '{base}': {child_dirs}")
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"[TexturesTab] detected serial children under '{base}': {child_dirs}")
         except Exception:
             pass
 
@@ -3241,7 +3580,7 @@ class TexturesTab(QWidget):
                     title_col = mapping.get(kU) or mapping.get(norm_serial_key(kU)) or ""
             except Exception:
                 title_col = ""
-                it = QTreeWidgetItem([display, title_col, ""]) 
+            it = QTreeWidgetItem([display, title_col, ""]) 
             it.setData(0, Qt.UserRole, pack_dir)
             tt = pack_dir
             try:
@@ -3252,7 +3591,8 @@ class TexturesTab(QWidget):
             it.setToolTip(0, tt)
             it.setIcon(0, QIcon())
             try:
-                print(f"[TexturesTab] adding item: display='{display}' title_col='{title_col}' path='{pack_dir}'")
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"[TexturesTab] adding item: display='{display}' title_col='{title_col}' path='{pack_dir}'")
             except Exception:
                 pass
             self.packs_list.addTopLevelItem(it)
@@ -3274,7 +3614,7 @@ class TexturesTab(QWidget):
         for name in sorted(os.listdir(base)):
             p = os.path.join(base, name)
             try:
-                print(f"[TexturesTab] scanning child: '{name}' is_dir={os.path.isdir(p)}")
+                logger.debug(f"[TexturesTab] scanning child: '{name}' is_dir={os.path.isdir(p)}")
             except Exception:
                 pass
             # show ZIP files as importable packs
@@ -3298,7 +3638,7 @@ class TexturesTab(QWidget):
                 it.setToolTip(0, tt)
                 it.setIcon(0, QIcon())
                 try:
-                    print(f"[TexturesTab] adding zip item: display='{name}' title_col='{title_col}' path='{p}'")
+                    logger.debug(f"[TexturesTab] adding zip item: display='{name}' title_col='{title_col}' path='{p}'")
                 except Exception:
                     pass
                 self.packs_list.addTopLevelItem(it)
@@ -3314,17 +3654,17 @@ class TexturesTab(QWidget):
                     # Diagnostic: list immediate entries to understand folder layout
                     try:
                         entries = os.listdir(p)
-                        print(f"[TexturesTab] child entries for '{name}': {entries}")
+                        logger.debug(f"[TexturesTab] child entries for '{name}': {entries}")
                     except Exception:
                         entries = []
                     try:
                         has_repl = os.path.isdir(os.path.join(p, 'replacements'))
-                        print(f"[TexturesTab] '{name}' has 'replacements' child: {has_repl}")
+                        logger.debug(f"[TexturesTab] '{name}' has 'replacements' child: {has_repl}")
                     except Exception:
                         pass
                     # Find the best image root (prefer replacements)
                     target = self._find_replacements_in_tree(p) or p
-                    print(f"[TexturesTab] _find_replacements_in_tree('{p}') -> {target}")
+                    logger.debug(f"[TexturesTab] _find_replacements_in_tree('{p}') -> {target}")
                     # If still no images, check direct 'replacements' child explicitly
                     try:
                         repl = os.path.join(p, 'replacements')
@@ -3380,7 +3720,7 @@ class TexturesTab(QWidget):
                     it.setToolTip(0, tt)
                     it.setIcon(0, QIcon())
                     try:
-                        print(f"[TexturesTab] adding serial child item: display='{display}' title_col='{title_col}' path='{target}'")
+                        logger.debug(f"[TexturesTab] adding serial child item: display='{display}' title_col='{title_col}' path='{target}'")
                     except Exception:
                         pass
                     self.packs_list.addTopLevelItem(it)
@@ -3432,7 +3772,7 @@ class TexturesTab(QWidget):
                     it.setToolTip(0, tt)
                     it.setIcon(0, QIcon())
                     try:
-                        print(f"[TexturesTab] adding crc-child item: display='{display}' title_col='{title_col}' path='{pack_dir}'")
+                        logger.debug(f"[TexturesTab] adding crc-child item: display='{display}' title_col='{title_col}' path='{pack_dir}'")
                     except Exception:
                         pass
                     self.packs_list.addTopLevelItem(it)
@@ -3502,7 +3842,7 @@ class TexturesTab(QWidget):
                 it.setToolTip(0, tt)
                 it.setIcon(0, QIcon())
                 try:
-                    print(f"[TexturesTab] adding image-pack item: display='{item_text}' title_col='{title_col}' path='{target}'")
+                    logger.debug(f"[TexturesTab] adding image-pack item: display='{item_text}' title_col='{title_col}' path='{target}'")
                 except Exception:
                     pass
                 self.packs_list.addTopLevelItem(it)
@@ -3519,7 +3859,7 @@ class TexturesTab(QWidget):
                             pth = itm.data(0, Qt.UserRole)
                             if isinstance(pth, str) and os.path.abspath(pth) == os.path.abspath(base):
                                 try:
-                                    print(f"[TexturesTab] removing base-as-pack item at index {idx} (path='{pth}')")
+                                    logger.debug(f"[TexturesTab] removing base-as-pack item at index {idx} (path='{pth}')")
                                 except Exception:
                                     pass
                                 self.packs_list.takeTopLevelItem(idx)
@@ -3537,7 +3877,7 @@ class TexturesTab(QWidget):
                     title_col = itm.text(1) or ''
                     data_path = itm.data(0, Qt.UserRole) or ''
                     try:
-                        print(f"[TexturesTab] item #{i}: display='{disp}' title_col='{title_col}' path='{data_path}'")
+                        logger.debug(f"[TexturesTab] item #{i}: display='{disp}' title_col='{title_col}' path='{data_path}'")
                     except Exception:
                         pass
             except Exception:
@@ -3574,7 +3914,7 @@ class TexturesTab(QWidget):
 
             if keys:
                 try:
-                    print(f"[TexturesTab] resolving serial keys: {keys}")
+                    logger.debug(f"[TexturesTab] resolving serial keys: {keys}")
                 except Exception:
                     pass
                 # Build variants for more robust lookup (with/without hyphen, normalized)
@@ -3589,7 +3929,7 @@ class TexturesTab(QWidget):
                             expanded_keys.append(v)
 
                 try:
-                    print(f"[TexturesTab] expanded resolver keys: {expanded_keys}")
+                    logger.debug(f"[TexturesTab] expanded resolver keys: {expanded_keys}")
                 except Exception:
                     pass
 
@@ -3604,7 +3944,7 @@ class TexturesTab(QWidget):
                     try_online = False
                 if try_online:
                     try:
-                        print("[TexturesTab] online lookup enabled for resolver")
+                        logger.debug("[TexturesTab] online lookup enabled for resolver")
                     except Exception:
                         pass
 
@@ -3612,7 +3952,7 @@ class TexturesTab(QWidget):
 
                 def _on_resolved(out: Dict[str, str]):
                     try:
-                        print(f"[TexturesTab] resolver returned: {out}")
+                        logger.debug(f"[TexturesTab] resolver returned: {out}")
                     except Exception:
                         pass
                     # Collect serials that still need a better lookup (resolver returned placeholders)
@@ -3693,7 +4033,7 @@ class TexturesTab(QWidget):
                                 def make_on_failed(serial):
                                     def _on_failed():
                                         try:
-                                            print(f"[TexturesTab] SingleOnlineLookup failed for {serial}")
+                                            logger.debug(f"[TexturesTab] SingleOnlineLookup failed for {serial}")
                                             # Automatic-only mode: do not prompt the user. Leave unresolved.
                                             try:
                                                 pass
@@ -3939,7 +4279,7 @@ class TexturesTab(QWidget):
 
         def _on_resolved(out: Dict[str, str]):
             try:
-                print(f"[TexturesTab.resolve_all] resolver returned: {out}")
+                logger.debug(f"[TexturesTab.resolve_all] resolver returned: {out}")
             except Exception:
                 pass
             for cand, items in item_map.items():
