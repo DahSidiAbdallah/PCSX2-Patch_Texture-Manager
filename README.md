@@ -1,5 +1,3 @@
-![logo](logo.png)
-
 <p align="center">
 	<img src="logo.png" alt="logo" width="240" />
 </p>
@@ -33,6 +31,14 @@ This project provides a Qt-based desktop application (PySide6) for working with 
 ## Screenshots / Logo
 
 The repository includes `logo.png` which is used as the application icon and is shown above.
+
+### Screenshots (real)
+
+The following screenshots were captured from a running instance of the application and are included in `screenshots/`:
+
+| Cheats (.pnach) | Textures | Bulk Scanner |
+|---:|:---:|:---|
+| <img src="screenshots/real_cheats.png" alt="Cheats tab" width="360" /> | <img src="screenshots/real_textures.png" alt="Textures tab" width="360" /> | <img src="screenshots/real_bulk.png" alt="Bulk scanner" width="360" /> |
 
 ## Requirements
 
@@ -102,4 +108,5 @@ This project is licensed under the [MIT License](LICENSE).
 
 ---
 
-If you'd like further improvements (stricter CI, screenshots, or expanded developer docs), I can add them.
+If you'd like further improvements (stricter CI or expanded developer docs), I can add them.
+Please see `CONTRIBUTING.md` for developer notes, testing guidance and how to contribute.
