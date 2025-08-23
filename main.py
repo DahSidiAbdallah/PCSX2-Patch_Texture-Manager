@@ -126,9 +126,63 @@ class CoverFetchWorker(QThread):
         self.cache_path = cache_path
 
     def run(self):
+        # If the optional requests dependency is missing, fall back to urllib so
+        # cover fetching still works. This mirrors the basic GET logic below but
+        # without the HEAD optimization.
         if requests is None:
             try:
-                print("[CoverFetchWorker] requests not available; aborting cover fetch")
+                from urllib.request import urlopen
+            except Exception:
+                urlopen = None
+            if urlopen is None:
+                try:
+                    print("[CoverFetchWorker] requests not available; aborting cover fetch")
+                except Exception:
+                    pass
+                self.fetch_failed.emit()
+                return
+            for candidate in self.urls:
+                if not candidate:
+                    continue
+                try:
+                    try:
+                        print(f"[CoverFetchWorker] probing: {candidate}")
+                    except Exception:
+                        pass
+                    with urlopen(candidate, timeout=12) as resp:
+                        status = getattr(resp, 'status', 200)
+                        content = resp.read() or b''
+                    if status == 200 and content:
+                        try:
+                            os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
+                            with open(self.cache_path, 'wb') as fh:
+                                fh.write(content)
+                            try:
+                                idx_dir = os.path.dirname(self.cache_path)
+                                idx_file = os.path.join(idx_dir, 'index.json')
+                                key = os.path.splitext(os.path.basename(candidate))[0]
+                                data = {}
+                                if os.path.isfile(idx_file):
+                                    with open(idx_file, 'r', encoding='utf-8') as inf:
+                                        data = json.load(inf)
+                                data[key] = candidate
+                                with open(idx_file, 'w', encoding='utf-8') as outf:
+                                    json.dump(data, outf)
+                            except Exception:
+                                pass
+                            self.fetched.emit(self.cache_path)
+                            return
+                        except Exception as e:
+                            try:
+                                print(f"[CoverFetchWorker] write failed: {e}")
+                            except Exception:
+                                pass
+                            self.fetch_failed.emit()
+                            return
+                except Exception:
+                    continue
+            try:
+                print(f"[CoverFetchWorker] all candidates failed: {self.urls}")
             except Exception:
                 pass
             self.fetch_failed.emit()
@@ -2357,6 +2411,8 @@ class TexturesTab(QWidget):
                 it.setToolTip(0, tt)
                 if thumb:
                     it.setIcon(0, QIcon(thumb))
+                else:
+                    it.setIcon(0, QIcon())
                 self.packs_list.addTopLevelItem(it)
 
             QMessageBox.information(self, "Imported (staged)", f"Imported ZIP into staging folder:\n{staging}\n\nPacks are available in the list and will be installed only when you click Install.")
@@ -2588,6 +2644,8 @@ class TexturesTab(QWidget):
                 it.setToolTip(0, tt)
                 if thumb:
                     it.setIcon(0, QIcon(thumb))
+                else:
+                    it.setIcon(0, QIcon())
                 self.packs_list.addTopLevelItem(it)
             # Refresh UI list but do not install any pack yet
             try:
@@ -3011,6 +3069,8 @@ class TexturesTab(QWidget):
                 it.setToolTip(0, tt)
                 if thumb:
                     it.setIcon(0, QIcon(thumb))
+                else:
+                    it.setIcon(0, QIcon())
                 try:
                     print(f"[TexturesTab] adding item: display='{display}' title_col='{title_col}' path='{pack_dir}'")
                 except Exception:
@@ -3117,6 +3177,8 @@ class TexturesTab(QWidget):
             it.setToolTip(0, tt)
             if thumb:
                 it.setIcon(0, QIcon(thumb))
+            else:
+                it.setIcon(0, QIcon())
             try:
                 print(f"[TexturesTab] adding item: display='{display}' title_col='{title_col}' path='{pack_dir}'")
             except Exception:
@@ -3246,6 +3308,8 @@ class TexturesTab(QWidget):
                     it.setToolTip(0, tt)
                     if thumb:
                         it.setIcon(0, QIcon(thumb))
+                    else:
+                        it.setIcon(0, QIcon())
                     try:
                         print(f"[TexturesTab] adding serial child item: display='{display}' title_col='{title_col}' path='{target}'")
                     except Exception:
@@ -3299,6 +3363,8 @@ class TexturesTab(QWidget):
                     it.setToolTip(0, tt)
                     if thumb:
                         it.setIcon(0, QIcon(thumb))
+                    else:
+                        it.setIcon(0, QIcon())
                     try:
                         print(f"[TexturesTab] adding crc-child item: display='{display}' title_col='{title_col}' path='{pack_dir}'")
                     except Exception:
@@ -3370,6 +3436,8 @@ class TexturesTab(QWidget):
                 it.setToolTip(0, tt)
                 if thumb:
                     it.setIcon(0, QIcon(thumb))
+                else:
+                    it.setIcon(0, QIcon())
                 try:
                     print(f"[TexturesTab] adding image-pack item: display='{item_text}' title_col='{title_col}' path='{target}'")
                 except Exception:
