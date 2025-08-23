@@ -1,0 +1,40 @@
+{
+  "SLUS-21678": [
+    {
+      "source": "broad_web",
+      "link": "https://www.bing.com/ck/a?!&&p=6f34f6c25e293da464d6697abbd8ceb767cd688edee3b306e21cd3e29516dca5JmltdHM9MTc1NTgyMDgwMA&ptn=3&ver=2&hsh=4&fclid=0d67946d-85e7-630a-3894-823c8461626f&u=a1aHR0cHM6Ly93d3cuc2NyaWJkLmNvbS9kb2N1bWVudC84NDgwMTIyOTIvU0xVUy0yMTY3OC00MjgxMTNDMi1kcmFib24tYmFsbC1idWRva2FpLXRla2FpbmNoaS0zLXBuYWNo&ntb=1",
+      "title": null,
+      "codes": [
+        "428113C2 0D67946D"
+      ]
+    },
+    {
+      "source": "broad_web",
+      "link": "https://www.bing.com/ck/a?!&&p=95a4d8cebc35b03928aad8d0b5cb2884dea00bea5faf3dbf60ac93cdf576cc4eJmltdHM9MTc1NTgyMDgwMA&ptn=3&ver=2&hsh=4&fclid=2aea2f54-dfe1-6d0a-1909-3905de446cf8&u=a1aHR0cHM6Ly93d3cuc2NyaWJkLmNvbS9kb2N1bWVudC84NDgwMTIyOTIvU0xVUy0yMTY3OC00MjgxMTNDMi1kcmFib24tYmFsbC1idWRva2FpLXRla2FpbmNoaS0zLXBuYWNo&ntb=1",
+      "title": null,
+      "codes": [
+        "428113C2 2AEA2F54"
+      ]
+    }
+  ],
+  "SCUS-97481": [],
+  "SLUS-20312": [
+    {
+      "source": "broad_web",
+      "link": "https://www.bing.com/ck/a?!&&p=554416e002f06aff8dc4d02c2060223013300eb8798c377c3aa437209459cf5bJmltdHM9MTc1NTgyMDgwMA&ptn=3&ver=2&hsh=4&fclid=35c62bc5-c267-6bdf-2a42-3d94c3e16a2f&u=a1aHR0cHM6Ly9mb3J1bXMucGNzeDIubmV0L1RocmVhZC1maW5hbC1mYW50YXN5LVgtbnRzYy1VLVNMVVMtMjAzMTItQkIzRDgzM0EtY2hlYXRzLW5vdC13b3JraW5nLU5FRUQtQ0hFQVRT&ntb=1",
+      "title": null,
+      "codes": [
+        "BB3D833A 35C62BC5"
+      ]
+    },
+    {
+      "source": "broad_web",
+      "link": "https://www.bing.com/ck/a?!&&p=3441ba7ed8c8e7e56de5274272bff4d9c8103874d40cd4df780129fd16f68240JmltdHM9MTc1NTgyMDgwMA&ptn=3&ver=2&hsh=4&fclid=2ce4b418-29e9-610d-345f-a2492800608c&u=a1aHR0cHM6Ly9mb3J1bXMucGNzeDIubmV0L1RocmVhZC1maW5hbC1mYW50YXN5LVgtbnRzYy1VLVNMVVMtMjAzMTItQkIzRDgzM0EtY2hlYXRzLW5vdC13b3JraW5nLU5FRUQtQ0hFQVRT&ntb=1",
+      "title": null,
+      "codes": [
+        "BB3D833A 2CE4B418"
+      ]
+    }
+  ],
+  "SLES-53346": []
+}
