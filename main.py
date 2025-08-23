@@ -549,7 +549,7 @@ def build_pnach(pd: PnachData) -> str:
         used_labels.add(label)
         return label
 
-    # Robust grouping: split by blank lines, comment headers, or contiguous patch lines
+    # Robust grouping: split by blank lines, comment headers, bracket headers, or contiguous patch lines
     lines = []
     if pd.comments:
         lines.extend(pd.comments)
@@ -568,8 +568,16 @@ def build_pnach(pd: PnachData) -> str:
             current_label = None
             inline_hints = []
 
+    BRACKET_HDR = re.compile(r"^\s*\[(.*?)\]\s*$")
     for item in lines:
         if isinstance(item, str):
+            # Preserve explicit bracket headers like: [Cheats/8-bit Patch] or [50/60 FPS]
+            mbr = BRACKET_HDR.match(item)
+            if mbr:
+                flush_group()
+                # store a marker label to indicate this was an original raw bracket header
+                current_label = "__RAW_LITERAL__:" + mbr.group(1).strip()
+                continue
             m = re.match(r"\s*(//|#|;)\s*([^:]+):?", item)
             if m:
                 flush_group()
@@ -597,8 +605,13 @@ def build_pnach(pd: PnachData) -> str:
             out.append(f"patch=1,EE,{addr},extended,{val}")
     else:
         for idx, (label, codes, hints) in enumerate(groups, 1):
-            group_label = ai_label_for_group(label, codes, inline_hints=hints, used_labels=used_labels) or f"Cheat {idx}"
-            out.append(f"[Cheats/{group_label}]")
+            # If the label was an original bracket header marker, emit it verbatim
+            if label and isinstance(label, str) and label.startswith("__RAW_LITERAL__:"):
+                literal = label.split(':', 1)[1]
+                out.append(f"[{literal}]")
+            else:
+                group_label = ai_label_for_group(label, codes, inline_hints=hints, used_labels=used_labels) or f"Cheat {idx}"
+                out.append(f"[Cheats/{group_label}]")
             for addr, val in codes:
                 out.append(f"patch=1,EE,{addr},extended,{val}")
     out.append("")
