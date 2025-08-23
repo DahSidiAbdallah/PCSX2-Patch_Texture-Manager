@@ -1,19 +1,23 @@
 ![logo](logo.png)
 
+<p align="center">
+	<img src="logo.png" alt="logo" width="240" />
+</p>
+
 # PCSX2 Patch & Texture Manager — Beta
 
-Lightweight GUI tool to help create, import, preview and install PCSX2 .pnach patches and texture packs.
+Lightweight GUI tool to help create, import, preview and install PCSX2 `.pnach` patches and texture packs.
 
 Version: beta
 
 ## Summary
 
-This project provides a Qt-based desktop application (PySide6) for working with PCSX2 patch files (.pnach) and texture replacement packs. It includes:
+This project provides a Qt-based desktop application (PySide6) for working with PCSX2 patch files (`.pnach`) and texture replacement packs. It includes:
 
-- RAW <-> PNACH conversion and previewing
+- RAW ↔ PNACH conversion and previewing
 - Auto-detection and resolution of Serial/CRC values (local mapping + optional online PSXDataCenter lookup)
 - Fetching and importing online cheats (GameHacking.org, forums, optional Playwright rendering)
-- Drag & drop support for .pnach, .zip and folders
+- Drag & drop support for `.pnach`, `.zip` and folders
 - Texture pack import/installation with automatic CRC suggestions
 - Simple INI toggles and test launch for PCSX2
 - Per-game profile export/import (JSON)
@@ -90,12 +94,12 @@ pytest -q
 
 ## Contributing
 
-Contributions are welcome. Please open issues or pull requests on the repository. For larger changes, please open an issue to discuss the design first.
+Please see `CONTRIBUTING.md` for developer notes, testing guidance and how to contribute.
 
 ## License
 
-This repository does not include an explicit license file. Add one if you want to grant reuse permissions.
+This project is licensed under the [MIT License](LICENSE).
 
 ---
 
-If you'd like, I can also add a short `CONTRIBUTING.md` or expand the README with developer notes (entrypoints, tests to run locally, and a short code map).
+If you'd like further improvements (stricter CI, screenshots, or expanded developer docs), I can add them.
