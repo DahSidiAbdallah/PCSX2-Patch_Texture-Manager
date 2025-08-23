@@ -106,7 +106,4 @@ Please see `CONTRIBUTING.md` for developer notes, testing guidance and how to co
 
 This project is licensed under the [MIT License](LICENSE).
 
----
 
-If you'd like further improvements (stricter CI or expanded developer docs), I can add them.
-Please see `CONTRIBUTING.md` for developer notes, testing guidance and how to contribute.
