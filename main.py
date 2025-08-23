@@ -1,30 +1,27 @@
 #!/usr/bin/env python3
 
 import os
-import sys
-import re
-import json
 import shutil
 import zipfile
 import subprocess
 import tempfile
 
-from dataclasses import dataclass
-from typing import List, Optional, Dict, Tuple
-
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFileDialog, QTabWidget, QVBoxLayout,
-    QHBoxLayout, QFormLayout, QLineEdit, QTextEdit, QPushButton, QLabel,
-    QMessageBox, QListWidget, QListWidgetItem, QGroupBox, QCheckBox, QComboBox,
-    QProgressBar, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QSpinBox, QDialog
+    QHBoxLayout, QFormLayout, QLineEdit, QTextEdit, QPushButton, QLabel, QHeaderView,
+    QMessageBox, QListWidget, QProgressBar, QGroupBox, QComboBox, QCheckBox,
+    QDialog, QListWidgetItem, QAbstractItemView, QRadioButton,
+    QTreeWidget, QTreeWidgetItem, QMenu, QInputDialog,
 )
-from PySide6.QtWidgets import QRadioButton
-from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem
-from PySide6.QtWidgets import QMenu
-from PySide6.QtWidgets import QInputDialog
-from PySide6.QtCore import QThread, Signal, Qt, QSettings, QTimer
-from PySide6.QtGui import QPixmap, QIcon, QDragEnterEvent, QDropEvent, QAction, QPainter, QColor
-from PySide6.QtWidgets import QSizePolicy
+from PySide6.QtWidgets import *
+import re
+import json
+from dataclasses import dataclass
+from typing import Optional, List, Tuple, Dict, Any
+
+from PySide6.QtCore import Qt, QThread, Signal, QSize, QSettings, QTimer
+import sys
+from PySide6.QtGui import QIcon, QPixmap, QDragEnterEvent, QDropEvent, QAction
 import concurrent.futures
 
 # Optional for online features elsewhere; not required for offline resolver
@@ -188,127 +185,48 @@ class CoverFetchWorker(QThread):
             self.fetch_failed.emit()
             return
 
-        # Try each candidate URL in order. Use HEAD first when possible to avoid downloading 404 HTML.
+        # Try each candidate URL in order.  Prefer GET directly because
+        # GitHub raw endpoints often do not honour HEAD requests.  Any
+        # successful response will be cached.
         for candidate in self.urls:
             if not candidate:
                 continue
             try:
                 try:
-                    print(f"[CoverFetchWorker] probing: {candidate}")
+                    print(f"[CoverFetchWorker] downloading: {candidate}")
                 except Exception:
                     pass
-                # Prefer HEAD to check existence; fall back to GET if server doesn't honor HEAD
-                ok = False
+                resp = requests.get(candidate, timeout=12)
+                status = getattr(resp, 'status_code', None)
+                content = getattr(resp, 'content', None) or b''
+                clen = len(content)
                 try:
-                    resp = requests.head(candidate, timeout=8)
-                    status = getattr(resp, 'status_code', None)
-                    if status == 200:
-                        ok = True
-                    else:
-                        # Some GitHub raw endpoints don't respond to HEAD reliably; we'll try GET below
-                        ok = False
+                    print(f"[CoverFetchWorker] response: status={status} content_len={clen} for {candidate}")
                 except Exception:
-                    ok = False
-
-                if not ok:
-                    # Try GET directly
-                    resp = requests.get(candidate, timeout=12)
-                    status = getattr(resp, 'status_code', None)
-                    content = getattr(resp, 'content', None) or b''
-                    clen = len(content)
+                    pass
+                if status == 200 and content:
                     try:
-                        print(f"[CoverFetchWorker] response: status={status} content_len={clen} for {candidate}")
+                        os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
+                        with open(self.cache_path, 'wb') as fh:
+                            fh.write(content)
+                        # update index.json for caching
+                        idx_dir = os.path.dirname(self.cache_path)
+                        idx_file = os.path.join(idx_dir, 'index.json')
+                        key = os.path.splitext(os.path.basename(candidate))[0]
+                        data = {}
+                        if os.path.isfile(idx_file):
+                            with open(idx_file, 'r', encoding='utf-8') as inf:
+                                data = json.load(inf)
+                        data[key] = candidate
+                        with open(idx_file, 'w', encoding='utf-8') as outf:
+                            json.dump(data, outf)
+                        self.fetched.emit(self.cache_path)
+                        return
                     except Exception:
                         pass
-                    if status == 200 and content:
-                        # write to cache and emit
-                        try:
-                            try:
-                                os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
-                            except Exception:
-                                pass
-                            with open(self.cache_path, 'wb') as fh:
-                                fh.write(content)
-                            try:
-                                print(f"[CoverFetchWorker] wrote cache: {self.cache_path} (from {candidate})")
-                            except Exception:
-                                pass
-                            # Persist successful candidate basename into an index next to the cache folder
-                            try:
-                                idx_dir = os.path.dirname(self.cache_path)
-                                idx_file = os.path.join(idx_dir, 'index.json')
-                                key = os.path.splitext(os.path.basename(candidate))[0]
-                                data = {}
-                                if os.path.isfile(idx_file):
-                                    try:
-                                        with open(idx_file, 'r', encoding='utf-8') as inf:
-                                            data = json.load(inf)
-                                    except Exception:
-                                        data = {}
-                                data[key] = candidate
-                                try:
-                                    with open(idx_file, 'w', encoding='utf-8') as outf:
-                                        json.dump(data, outf)
-                                except Exception:
-                                    pass
-                            except Exception:
-                                pass
-                            self.fetched.emit(self.cache_path)
-                            return
-                        except Exception as e:
-                            try:
-                                print(f"[CoverFetchWorker] write failed: {e}")
-                            except Exception:
-                                pass
-                            self.fetch_failed.emit()
-                            return
-                    else:
-                        # try next candidate
-                        continue
-                else:
-                    # HEAD returned 200; perform GET to fetch content
-                    try:
-                        resp = requests.get(candidate, timeout=12)
-                        status = getattr(resp, 'status_code', None)
-                        content = getattr(resp, 'content', None) or b''
-                        clen = len(content)
-                        try:
-                            print(f"[CoverFetchWorker] got: status={status} content_len={clen} for {candidate}")
-                        except Exception:
-                            pass
-                        if status == 200 and content:
-                            try:
-                                try:
-                                    os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
-                                except Exception:
-                                    pass
-                                with open(self.cache_path, 'wb') as fh:
-                                    fh.write(content)
-                                try:
-                                    print(f"[CoverFetchWorker] wrote cache: {self.cache_path} (from {candidate})")
-                                except Exception:
-                                    pass
-                                self.fetched.emit(self.cache_path)
-                                return
-                            except Exception as e:
-                                try:
-                                    print(f"[CoverFetchWorker] write failed: {e}")
-                                except Exception:
-                                    pass
-                                self.fetch_failed.emit()
-                                return
-                        else:
-                            continue
-                    except Exception:
-                        continue
             except Exception:
                 continue
-
-        # All candidates exhausted
-        try:
-            print(f"[CoverFetchWorker] all candidates failed: {self.urls}")
-        except Exception:
-            pass
+        # All candidates failed
         self.fetch_failed.emit()
 
 
@@ -2209,9 +2127,6 @@ class TexturesTab(QWidget):
         info.setWordWrap(True)
         layout.addWidget(info)
 
-        # Drag & Drop
-        self.setAcceptDrops(True)
-
         # Installed packs list + actions
         packs_group = QGroupBox("Installed Packs")
         pv = QVBoxLayout(packs_group)
@@ -2219,6 +2134,10 @@ class TexturesTab(QWidget):
         self.packs_list = QTreeWidget()
         self.packs_list.setColumnCount(3)
         self.packs_list.setHeaderLabels(["Folder/Serial", "Title", "Staged"])
+        # Add a search box above the list to filter by serial or title
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Search by serial or title...")
+        self.search_edit.textChanged.connect(self._filter_packs)
         # Allow multi-selection for mass-install operations
         self.packs_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.packs_list.itemSelectionChanged.connect(self._on_pack_selected)
@@ -2226,11 +2145,12 @@ class TexturesTab(QWidget):
         self.packs_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.packs_list.customContextMenuRequested.connect(self._packs_context_menu)
 
-        # Layout: left = list, right = preview/metadata
+        # Layout: left = search + list, right = preview/metadata
         split_row = QHBoxLayout()
         left_w = QWidget()
         left_l = QVBoxLayout(left_w)
         left_l.setContentsMargins(0,0,0,0)
+        left_l.addWidget(self.search_edit)
         left_l.addWidget(self.packs_list)
 
         # Preview panel on the right
@@ -2303,6 +2223,25 @@ class TexturesTab(QWidget):
             self.scan_installed_textures()
         except Exception:
             pass
+
+        # Configure packs_list for better UX
+        header = self.packs_list.header()
+        header.setStretchLastSection(True)
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        self.packs_list.setAlternatingRowColors(True)
+        self.packs_list.setSortingEnabled(True)
+        self.packs_list.sortByColumn(1, Qt.AscendingOrder)
+
+    def _filter_packs(self, text: str):
+        """Hide list rows that do not match the search text."""
+        text = text.strip().lower()
+        for i in range(self.packs_list.topLevelItemCount()):
+            it = self.packs_list.topLevelItem(i)
+            serial = (it.text(0) or '').lower()
+            title = (it.text(1) or '').lower()
+            match = (not text) or (text in serial) or (text in title)
+            it.setHidden(not match)
 
     # ---- Worker management to prevent GC / crashes ----
     def _start_worker(self, worker: QThread):
@@ -2409,10 +2348,8 @@ class TexturesTab(QWidget):
                 except Exception:
                     pass
                 it.setToolTip(0, tt)
-                if thumb:
-                    it.setIcon(0, QIcon(thumb))
-                else:
-                    it.setIcon(0, QIcon())
+                # Always use an empty icon for the serial column; avoid embedding thumbnails here
+                it.setIcon(0, QIcon())
                 self.packs_list.addTopLevelItem(it)
 
             QMessageBox.information(self, "Imported (staged)", f"Imported ZIP into staging folder:\n{staging}\n\nPacks are available in the list and will be installed only when you click Install.")
@@ -2642,10 +2579,7 @@ class TexturesTab(QWidget):
                 except Exception:
                     pass
                 it.setToolTip(0, tt)
-                if thumb:
-                    it.setIcon(0, QIcon(thumb))
-                else:
-                    it.setIcon(0, QIcon())
+                it.setIcon(0, QIcon())
                 self.packs_list.addTopLevelItem(it)
             # Refresh UI list but do not install any pack yet
             try:
@@ -3067,10 +3001,7 @@ class TexturesTab(QWidget):
                 except Exception:
                     pass
                 it.setToolTip(0, tt)
-                if thumb:
-                    it.setIcon(0, QIcon(thumb))
-                else:
-                    it.setIcon(0, QIcon())
+                it.setIcon(0, QIcon())
                 try:
                     print(f"[TexturesTab] adding item: display='{display}' title_col='{title_col}' path='{pack_dir}'")
                 except Exception:
@@ -3175,10 +3106,7 @@ class TexturesTab(QWidget):
             except Exception:
                 pass
             it.setToolTip(0, tt)
-            if thumb:
-                it.setIcon(0, QIcon(thumb))
-            else:
-                it.setIcon(0, QIcon())
+            it.setIcon(0, QIcon())
             try:
                 print(f"[TexturesTab] adding item: display='{display}' title_col='{title_col}' path='{pack_dir}'")
             except Exception:
@@ -3306,10 +3234,7 @@ class TexturesTab(QWidget):
                     except Exception:
                         pass
                     it.setToolTip(0, tt)
-                    if thumb:
-                        it.setIcon(0, QIcon(thumb))
-                    else:
-                        it.setIcon(0, QIcon())
+                    it.setIcon(0, QIcon())
                     try:
                         print(f"[TexturesTab] adding serial child item: display='{display}' title_col='{title_col}' path='{target}'")
                     except Exception:
@@ -3361,10 +3286,7 @@ class TexturesTab(QWidget):
                     except Exception:
                         pass
                     it.setToolTip(0, tt)
-                    if thumb:
-                        it.setIcon(0, QIcon(thumb))
-                    else:
-                        it.setIcon(0, QIcon())
+                    it.setIcon(0, QIcon())
                     try:
                         print(f"[TexturesTab] adding crc-child item: display='{display}' title_col='{title_col}' path='{pack_dir}'")
                     except Exception:
@@ -3434,10 +3356,7 @@ class TexturesTab(QWidget):
                 except Exception:
                     pass
                 it.setToolTip(0, tt)
-                if thumb:
-                    it.setIcon(0, QIcon(thumb))
-                else:
-                    it.setIcon(0, QIcon())
+                it.setIcon(0, QIcon())
                 try:
                     print(f"[TexturesTab] adding image-pack item: display='{item_text}' title_col='{title_col}' path='{target}'")
                 except Exception:

@@ -1,0 +1,142 @@
+This patch makes several improvements to the **Texture Packs** tab of the
+PCSX2 Patch & Texture Manager.  It removes the misleading folder
+icons, improves cover downloading, displays a placeholder when no
+cover is available, and adds a search box with instant filtering to
+improve the user experience.
+
+```
+diff --git a/main.py b/main.py
+@@ class CoverFetchWorker(QThread):
+        # Try each candidate URL in order.  Prefer GET directly because
+        # GitHub raw endpoints often do not honour HEAD requests.  Any
+        # successful response will be cached.
+        for candidate in self.urls:
+            if not candidate:
+                continue
+            try:
+                try:
+                    print(f"[CoverFetchWorker] downloading: {candidate}")
+                except Exception:
+                    pass
+                resp = requests.get(candidate, timeout=12)
+                status = getattr(resp, 'status_code', None)
+                content = getattr(resp, 'content', None) or b''
+                clen = len(content)
+                try:
+                    print(f"[CoverFetchWorker] response: status={status} content_len={clen} for {candidate}")
+                except Exception:
+                    pass
+                if status == 200 and content:
+                    try:
+                        os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
+                        with open(self.cache_path, 'wb') as fh:
+                            fh.write(content)
+                        # update index.json for caching
+                        idx_dir = os.path.dirname(self.cache_path)
+                        idx_file = os.path.join(idx_dir, 'index.json')
+                        key = os.path.splitext(os.path.basename(candidate))[0]
+                        data = {}
+                        if os.path.isfile(idx_file):
+                            with open(idx_file, 'r', encoding='utf-8') as inf:
+                                data = json.load(inf)
+                        data[key] = candidate
+                        with open(idx_file, 'w', encoding='utf-8') as outf:
+                            json.dump(data, outf)
+                        self.fetched.emit(self.cache_path)
+                        return
+                    except Exception:
+                        pass
+            except Exception:
+                continue
+        # All candidates failed
+        self.fetch_failed.emit()
+
+@@ class TexturesTab(QWidget):
+     def _build_ui(self):
+         """Construct the layout for the textures tab."""
+@@
+         # Add a search box above the list to filter by serial or title
+         self.search_edit = QLineEdit()
+         self.search_edit.setPlaceholderText("Search by serial or title...")
+         self.search_edit.textChanged.connect(self._filter_packs)
+         packs_layout = QVBoxLayout()
+         packs_layout.addWidget(self.search_edit)
+         packs_layout.addWidget(self.packs_list)
+@@
+         # Configure packs_list for better UX
+         header = self.packs_list.header()
+         header.setStretchLastSection(True)
+         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+         header.setSectionResizeMode(1, QHeaderView.Stretch)
+         self.packs_list.setAlternatingRowColors(True)
+         self.packs_list.setSortingEnabled(True)
+         self.packs_list.sortByColumn(1, Qt.AscendingOrder)
+
+@@
+     def _filter_packs(self, text: str):
+         """Hide list rows that do not match the search text."""
+         text = text.strip().lower()
+         for i in range(self.packs_list.topLevelItemCount()):
+             it = self.packs_list.topLevelItem(i)
+             serial = (it.text(0) or '').lower()
+             title = (it.text(1) or '').lower()
+             match = (not text) or (text in serial) or (text in title)
+             it.setHidden(not match)
+
+@@
+     def scan_installed_textures(self):
+@@
+                 it = QTreeWidgetItem([name or serial_display, title_col or '', staged])
+                 # Always use an empty icon for the serial column; avoid embedding thumbnails here
+                 it.setIcon(0, QIcon())
+                 it.setToolTip(0, tt)
+                 self.packs_list.addTopLevelItem(it)
+
+@@
+     def _on_pack_selected(self):
+@@
+             # Try remote covers if local cover unavailable.  Build candidate URLs
+             # by trying the serial as‑is (preserving hyphens), the serial without
+             # hyphens/underscores, and the 3D cover variant.  The order here
+             # roughly reflects which filenames are most common.
+             serial_variants = []
+             if serial:
+                 s = serial.upper()
+                 s_no_sep = s.replace('-', '').replace('_', '')
+                 serial_variants = [s, s_no_sep]
+             remote_variants = []
+             for s in serial_variants:
+                 remote_variants.append(f"https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/default/{s}.jpg")
+             # Also consider the 3D cover variant
+             if serial:
+                 remote_variants.append(f"https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/3d/{serial.upper()}.png")
+             # Launch worker to download the first cover that succeeds.  If
+             # everything fails, display a friendly placeholder.
+             worker = CoverFetchWorker(remote_variants, cached_path, self)
+             worker.fetched.connect(lambda p: self.cover_label.setPixmap(QPixmap(p)))
+             worker.fetch_failed.connect(lambda: self.cover_label.setText("No cover available"))
+             worker.start()
+
+             if not any(remote_variants):
+                 self.cover_label.setText("No cover available")
+             else:
+                 # Clear any previous placeholder while loading
+                 self.cover_label.setText("")
+
+```
+
+To apply this patch, save the above diff to a file (for example
+`pcsx2_texture_tab_patch.diff`) and run the following command in your
+repository root:
+
+```bash
+patch -p1 < pcsx2_texture_tab_patch.diff
+```
+
+After applying the patch, rebuild and run the application.  The
+installed packs list will no longer display large folder icons, covers
+will be fetched more reliably (including 3D art), a "No cover
+available" placeholder will appear when appropriate, and you can
+quickly filter the list using the new search box.  Column resizing,
+alternating row colours and sorting have been enabled to improve
+readability.
