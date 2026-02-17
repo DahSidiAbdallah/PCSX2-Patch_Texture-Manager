@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QFormLayout, QLineEdit, QTextEdit, QPushButton, QLabel, QHeaderView,
     QMessageBox, QListWidget, QProgressBar, QGroupBox, QComboBox, QCheckBox,
     QDialog, QListWidgetItem, QAbstractItemView, QRadioButton,
-    QTreeWidget, QTreeWidgetItem, QMenu, QInputDialog,
+    QTreeWidget, QTreeWidgetItem, QMenu, QInputDialog, QScrollArea,
 )
 from PySide6.QtWidgets import *
 import re
@@ -1282,118 +1282,235 @@ class CheatsTab(QWidget):
             self._start_worker(worker)
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        # Target directories panel
-        self.paths_group = QGroupBox("PCSX2 Folders")
+        # Create a scroll area for the entire tab content
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        
+        # Create a container widget for all content
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        
+        # Quick Start Guide (collapsible)
+        self.quick_start_group = QGroupBox("📖 Quick Start Guide")
+        self.quick_start_group.setCheckable(True)
+        self.quick_start_group.setChecked(False)
+        qs_layout = QVBoxLayout()
+        quick_start_text = QLabel(
+            "<b>How to add cheats:</b><br>"
+            "1. Enter your game's <b>Serial</b> (e.g., SLUS-12345) or <b>CRC</b><br>"
+            "2. Click <b>Fetch Online Cheats</b> or paste codes below<br>"
+            "3. Click <b>Generate Preview</b> to see the result<br>"
+            "4. Click <b>Save to Cheats</b> to install<br><br>"
+            "<i>Tip: You can drag & drop .pnach files directly!</i>"
+        )
+        quick_start_text.setWordWrap(True)
+        qs_layout.addWidget(quick_start_text)
+        self.quick_start_group.setLayout(qs_layout)
+        layout.addWidget(self.quick_start_group)
+        
+        # Target directories panel (simplified, collapsible)
+        self.paths_group = QGroupBox("⚙️ PCSX2 Folders (Auto-detected)")
+        self.paths_group.setCheckable(True)
+        self.paths_group.setChecked(False)
         fl = QFormLayout(self.paths_group)
         self.cheats_dir = QLineEdit()
+        self.cheats_dir.setReadOnly(True)
         self.textures_dir = QLineEdit()
-        self.btn_browse_cheats = QPushButton("Browse…")
+        self.textures_dir.setReadOnly(True)
+        self.btn_browse_cheats = QPushButton("Change…")
         self.btn_browse_cheats.clicked.connect(lambda: self._pick_dir(self.cheats_dir))
-        self.btn_browse_textures = QPushButton("Browse…")
+        self.btn_browse_textures = QPushButton("Change…")
         self.btn_browse_textures.clicked.connect(lambda: self._pick_dir(self.textures_dir))
 
-        fl.addRow("cheats:", self._row(self.cheats_dir, self.btn_browse_cheats))
-        fl.addRow("textures:", self._row(self.textures_dir, self.btn_browse_textures))
+        fl.addRow("Cheats folder:", self._row(self.cheats_dir, self.btn_browse_cheats))
+        fl.addRow("Textures folder:", self._row(self.textures_dir, self.btn_browse_textures))
         layout.addWidget(self.paths_group)
 
-        # Import/Build panel
-        build_group = QGroupBox("Build / Import PNACH")
-        bl = QFormLayout(build_group)
+        # Main cheat builder panel (simplified)
+        build_group = QGroupBox("🎮 Add Cheats to Your Game")
+        bl = QVBoxLayout(build_group)
+        
+        # Basic info section
+        basic_info = QWidget()
+        basic_layout = QFormLayout(basic_info)
+        basic_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        
         self.title_edit = QLineEdit()
+        self.title_edit.setPlaceholderText("Game title (auto-filled)")
         self.serial_edit = QLineEdit()
+        self.serial_edit.setPlaceholderText("e.g., SLUS-12345")
+        self.serial_edit.setToolTip("The game's serial number, usually found on the disc or in PCSX2")
         self.crc_edit = QLineEdit()
-        self.crc_edit.setPlaceholderText("8 hex digits, e.g., F4715852")
-
-        self.input_mode = QComboBox()
-        self.input_mode.addItems([
-            "Paste RAW 8x8 pairs",
-            "Open existing .pnach file",
-        ])
-
+        self.crc_edit.setPlaceholderText("e.g., F4715852 (optional)")
+        self.crc_edit.setToolTip("8-digit hex code identifying your game version. Leave empty if unsure.")
+        
+        basic_layout.addRow("Game Title:", self.title_edit)
+        basic_layout.addRow("Serial Number:", self.serial_edit)
+        basic_layout.addRow("CRC (optional):", self.crc_edit)
+        bl.addWidget(basic_info)
+        
+        # Action buttons (prominent)
+        action_row = QWidget()
+        action_layout = QHBoxLayout(action_row)
+        action_layout.setContentsMargins(0, 10, 0, 10)
+        
+        self.btn_fetch_online = QPushButton("🌐 Fetch Online Cheats")
+        self.btn_fetch_online.setMinimumHeight(40)
+        self.btn_fetch_online.setToolTip("Download cheats from online databases")
+        self.btn_fetch_online.clicked.connect(self._fetch_online_cheats)
+        
+        self.btn_open_pnach = QPushButton("📂 Open Cheat File")
+        self.btn_open_pnach.setMinimumHeight(40)
+        self.btn_open_pnach.setToolTip("Load an existing .pnach cheat file")
+        self.btn_open_pnach.clicked.connect(self._open_pnach_file)
+        
+        action_layout.addWidget(self.btn_fetch_online)
+        action_layout.addWidget(self.btn_open_pnach)
+        bl.addWidget(action_row)
+        
+        # Codes editor
+        codes_label = QLabel("Cheat Codes:")
+        bl.addWidget(codes_label)
         self.codes_text = QTextEdit()
         self.codes_text.setPlaceholderText(
-            "Paste RAW pairs like:\nXXXXXXXX YYYYYYYY\n…"
+            "Paste or edit cheat codes here...\n\n"
+            "Supported formats:\n"
+            "• Raw codes (XXXXXXXX YYYYYYYY)\n"
+            "• PNACH format\n"
+            "• Most common cheat formats"
         )
-        self.btn_open_pnach = QPushButton("Open .pnach…")
-        self.btn_open_pnach.clicked.connect(self._open_pnach_file)
-
-        # NEW: open generic codes file
-        self.btn_open_codes = QPushButton("Open codes file…")
-        self.btn_open_codes.clicked.connect(self._open_codes_file)
-
-        self.btn_make = QPushButton("Generate Preview")
+        self.codes_text.setMinimumHeight(150)
+        bl.addWidget(self.codes_text)
+        
+        # Generate and Save buttons
+        action_row2 = QWidget()
+        action_layout2 = QHBoxLayout(action_row2)
+        action_layout2.setContentsMargins(0, 5, 0, 5)
+        
+        self.btn_make = QPushButton("👁️ Preview")
+        self.btn_make.setMinimumHeight(35)
+        self.btn_make.setToolTip("Preview how the cheat file will look")
         self.btn_make.clicked.connect(self._generate_preview)
+        
+        self.btn_save = QPushButton("💾 Save to PCSX2")
+        self.btn_save.setMinimumHeight(35)
+        self.btn_save.setToolTip("Install the cheats to your PCSX2 folder")
+        self.btn_save.clicked.connect(self._save_to_cheats)
+        self.btn_save.setStyleSheet("QPushButton { font-weight: bold; }")
+        
+        action_layout2.addWidget(self.btn_make)
+        action_layout2.addWidget(self.btn_save)
+        bl.addWidget(action_row2)
+        
+        # Preview (collapsible)
+        self.preview_group = QGroupBox("Preview")
+        self.preview_group.setCheckable(True)
+        self.preview_group.setChecked(False)
+        preview_layout = QVBoxLayout()
         self.preview = QTextEdit()
         self.preview.setReadOnly(True)
-
-        self.btn_save = QPushButton("Save to cheats")
-        self.btn_save.clicked.connect(self._save_to_cheats)
-
-        # Online cheat fetch button
-        self.btn_fetch_online = QPushButton("Fetch Online Cheats")
-        self.btn_fetch_online.setToolTip(
-            "Fetch and display cheats from PCSX2 forums, GameHacking.org, and PSXDatacenter for the current Serial/CRC."
-        )
-        self.btn_fetch_online.clicked.connect(self._fetch_online_cheats)
-
-        # Title Resolver controls
+        self.preview.setMaximumHeight(200)
+        preview_layout.addWidget(self.preview)
+        self.preview_group.setLayout(preview_layout)
+        bl.addWidget(self.preview_group)
+        
+        layout.addWidget(build_group)
+        
+        # Advanced options (collapsible)
+        self.advanced_group = QGroupBox("🔧 Advanced Options")
+        self.advanced_group.setCheckable(True)
+        self.advanced_group.setChecked(False)
+        adv_layout = QVBoxLayout(self.advanced_group)
+        
+        # Input mode selector
+        mode_row = QWidget()
+        mode_layout = QHBoxLayout(mode_row)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.addWidget(QLabel("Input mode:"))
+        self.input_mode = QComboBox()
+        self.input_mode.addItems([
+            "Auto-detect format",
+            "Force PNACH format",
+        ])
+        mode_layout.addWidget(self.input_mode)
+        self.btn_open_codes = QPushButton("Open Any File…")
+        self.btn_open_codes.clicked.connect(self._open_codes_file)
+        mode_layout.addWidget(self.btn_open_codes)
+        mode_layout.addStretch()
+        adv_layout.addWidget(mode_row)
+        
+        # Title resolver
+        resolver_subgroup = QGroupBox("Title Auto-Detection")
+        resolver_layout = QVBoxLayout()
+        
+        map_row = QWidget()
+        map_layout = QHBoxLayout(map_row)
+        map_layout.setContentsMargins(0, 0, 0, 0)
         self.map_path = QLineEdit()
-        self.map_path.setPlaceholderText("Load CRC/Serial→Title mapping CSV/JSON…")
-        self.btn_load_map = QPushButton("Load mapping…")
+        self.map_path.setPlaceholderText("Custom title mapping file (optional)")
+        self.btn_load_map = QPushButton("Load…")
         self.btn_load_map.clicked.connect(self._load_mapping)
-
-        # UPDATED: offline wording
-        self.chk_offline_lists = QCheckBox(
-            "Use bundled PSXDataCenter lists (offline)"
-        )
-        self.chk_offline_lists.setToolTip(
-            "Use locally stored PSXDataCenter HTML lists (ulist2.html / plist2.html / jlist2.html) to expand the mapping without internet."
-        )
-        self.chk_online = QCheckBox("Also try web lookup (PSXDataCenter)")
-        self.chk_online.setToolTip(
-            "If checked, we will attempt a quick web lookup on psxdatacenter.com to fill missing title/CRC. Needs internet."
-        )
-        self.btn_resolve = QPushButton("Resolve Title")
+        map_layout.addWidget(self.map_path)
+        map_layout.addWidget(self.btn_load_map)
+        resolver_layout.addWidget(map_row)
+        
+        self.chk_offline_lists = QCheckBox("Use offline game database")
+        self.chk_offline_lists.setToolTip("Use bundled PSXDataCenter lists for offline title lookup")
+        self.chk_offline_lists.setChecked(True)
+        
+        self.chk_online = QCheckBox("Enable online lookup")
+        self.chk_online.setToolTip("Search PSXDataCenter.com for game titles (requires internet)")
+        
+        self.btn_resolve = QPushButton("Resolve Title Now")
         self.btn_resolve.clicked.connect(self._resolve_title_clicked)
+        
+        resolver_layout.addWidget(self.chk_offline_lists)
+        resolver_layout.addWidget(self.chk_online)
+        resolver_layout.addWidget(self.btn_resolve)
+        
         self.progress.setMinimum(0)
         self.progress.setMaximum(1)
         self.progress.setValue(0)
+        self.progress.setMaximumHeight(15)
+        resolver_layout.addWidget(self.progress)
+        
         self.source_label = QLabel("")
-        bl.addRow("Title:", self.title_edit)
-        bl.addRow("Serial(s):", self.serial_edit)
-        bl.addRow("CRC:", self.crc_edit)
-        bl.addRow(
-            "Input:",
-            self._row(
-                self.input_mode, self.btn_open_pnach, self.btn_open_codes, self.btn_fetch_online
-            ),
-        )
-        bl.addRow("Codes / Content:", self.codes_text)
-        bl.addRow(self._row(self.btn_make, self.btn_save))
-        bl.addRow(QLabel("Title Resolver:"))
-        bl.addRow(
-            self._row(
-                self.map_path,
-                self.btn_load_map,
-                self.chk_offline_lists,
-                self.chk_online,
-                self.btn_resolve,
-            )
-        )
-        bl.addRow("Progress:", self.progress)
-        bl.addRow("Detected from:", self.source_label)
-        bl.addRow("Preview:", self.preview)
-        layout.addWidget(build_group)
+        self.source_label.setStyleSheet("QLabel { color: #666; font-size: 10px; }")
+        resolver_layout.addWidget(self.source_label)
+        
+        resolver_subgroup.setLayout(resolver_layout)
+        adv_layout.addWidget(resolver_subgroup)
+        
+        layout.addWidget(self.advanced_group)
 
         # Existing cheats list
-        list_group = QGroupBox("Installed PNACH Files")
+        list_group = QGroupBox("📋 Installed Cheats")
         v2 = QVBoxLayout(list_group)
+        
+        # Search/filter bar
+        search_row = QWidget()
+        search_layout = QHBoxLayout(search_row)
+        search_layout.setContentsMargins(0, 0, 0, 5)
+        search_layout.addWidget(QLabel("Search:"))
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText("Filter by game name or CRC...")
+        search_layout.addWidget(self.search_box)
+        v2.addWidget(search_row)
+        
         v2.addWidget(self.list)
-        self.btn_refresh = QPushButton("Refresh List")
+        self.btn_refresh = QPushButton("🔄 Refresh List")
         self.btn_refresh.clicked.connect(self.refresh_list)
         v2.addWidget(self.btn_refresh)
         layout.addWidget(list_group)
+
+        # Set the container as the scroll area's widget
+        scroll.setWidget(container)
+        
+        # Set the scroll area as the main layout for this tab
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(scroll)
 
         # QoL: auto-title when user edits CRC/Serial
         self.serial_edit.textChanged.connect(self._maybe_autotitle)
@@ -2382,7 +2499,14 @@ class TexturesTab(QWidget):
             self._start_worker(worker)
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        # Create a scroll area for the entire tab content
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        
+        # Create a container widget for all content
+        container = QWidget()
+        layout = QVBoxLayout(container)
 
         group = QGroupBox("Texture Pack Import")
         fl = QFormLayout(group)
@@ -2517,6 +2641,14 @@ class TexturesTab(QWidget):
         self.packs_list.setAlternatingRowColors(True)
         self.packs_list.setSortingEnabled(True)
         self.packs_list.sortByColumn(1, Qt.AscendingOrder)
+        
+        # Set the container as the scroll area's widget
+        scroll.setWidget(container)
+        
+        # Set the scroll area as the main layout for this tab
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(scroll)
 
     def _filter_packs(self, text: str):
         """Hide list rows that do not match the search text."""
@@ -4487,7 +4619,14 @@ class BulkTab(QWidget):
 
     # ---------- UI ----------
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        # Create a scroll area for the entire tab content
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        
+        # Create a container widget for all content
+        container = QWidget()
+        layout = QVBoxLayout(container)
 
         # Controls row
         ctrl_row = QWidget()
@@ -4638,6 +4777,14 @@ class BulkTab(QWidget):
         find_act.setShortcut("Ctrl+F")
         find_act.triggered.connect(lambda: self.search_edit.setFocus())
         self.addAction(find_act)
+        
+        # Set the container as the scroll area's widget
+        scroll.setWidget(container)
+        
+        # Set the scroll area as the main layout for this tab
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(scroll)
 
     def _add_files(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Add files", os.path.expanduser("~"),
@@ -4987,76 +5134,133 @@ class SettingsTab(QWidget):
         self._build_ui()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        grp = QGroupBox("PCSX2 User Directory")
+        # Create a scroll area for the entire tab content
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        
+        # Create a container widget for all content
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        
+        # Main settings
+        grp = QGroupBox("📁 PCSX2 Installation")
         fl = QFormLayout(grp)
         self.user_dir = QLineEdit()
+        self.user_dir.setToolTip("The main PCSX2 user data folder")
         self.btn_browse = QPushButton("Browse…")
         self.btn_browse.clicked.connect(self._browse)
         self.btn_detect = QPushButton("Auto-detect")
+        self.btn_detect.setToolTip("Automatically find your PCSX2 folder")
         self.btn_detect.clicked.connect(self._detect)
-        fl.addRow("Base:", self._row(self.user_dir, self.btn_browse, self.btn_detect))
+        fl.addRow("User folder:", self._row(self.user_dir, self.btn_browse, self.btn_detect))
         layout.addWidget(grp)
 
-        subgrp = QGroupBox("Detected Subfolders (created if missing)")
+        # Detected subfolders (simplified, collapsible)
+        subgrp = QGroupBox("Detected Folders")
+        subgrp.setCheckable(True)
+        subgrp.setChecked(False)
         fl2 = QFormLayout(subgrp)
         self.cheats_label = QLabel("")
         self.cheatsws_label = QLabel("")
         self.textures_label = QLabel("")
         self.logs_label = QLabel("")
-        fl2.addRow("cheats:", self.cheats_label)
-        fl2.addRow("cheats_ws:", self.cheatsws_label)
-        fl2.addRow("textures:", self.textures_label)
-        fl2.addRow("logs:", self.logs_label)
+        fl2.addRow("Cheats:", self.cheats_label)
+        fl2.addRow("Cheats WS:", self.cheatsws_label)
+        fl2.addRow("Textures:", self.textures_label)
+        fl2.addRow("Logs:", self.logs_label)
         layout.addWidget(subgrp)
 
-        # Omniconvert + PCSX2 toggles
-        cfg = QGroupBox("Integrations & Toggles (best-effort)")
+        # Quick actions
+        quick_grp = QGroupBox("⚡ Quick Actions")
+        quick_layout = QVBoxLayout()
+        
+        self.btn_enable_cheats = QPushButton("✓ Enable Cheats in PCSX2")
+        self.btn_enable_cheats.setMinimumHeight(35)
+        self.btn_enable_cheats.setToolTip("Automatically enable cheats in PCSX2.ini")
+        self.btn_enable_cheats.clicked.connect(self._toggle_cheats_ini)
+        
+        self.btn_enable_textures = QPushButton("✓ Enable Texture Replacement")
+        self.btn_enable_textures.setMinimumHeight(35)
+        self.btn_enable_textures.setToolTip("Automatically enable texture replacement in PCSX2.ini")
+        self.btn_enable_textures.clicked.connect(self._toggle_textures_ini)
+        
+        quick_layout.addWidget(self.btn_enable_cheats)
+        quick_layout.addWidget(self.btn_enable_textures)
+        quick_grp.setLayout(quick_layout)
+        layout.addWidget(quick_grp)
+
+        # Advanced integrations (collapsible)
+        cfg = QGroupBox("🔧 Advanced Integrations")
+        cfg.setCheckable(True)
+        cfg.setChecked(False)
         cfgl = QFormLayout(cfg)
+        
         self.omniconvert_path = QLineEdit()
         self.omniconvert_path.setPlaceholderText("Path to Omniconvert.exe (optional)")
+        self.omniconvert_path.setToolTip("External tool for converting cheat formats")
         btn_omni = QPushButton("Browse…")
         btn_omni.clicked.connect(lambda: self._pick_file(self.omniconvert_path))
-        self.btn_enable_cheats = QPushButton("Enable Cheats in INI")
-        self.btn_enable_cheats.clicked.connect(self._toggle_cheats_ini)
-        self.btn_enable_textures = QPushButton("Enable Texture Replacement in INI")
-        self.btn_enable_textures.clicked.connect(self._toggle_textures_ini)
+        
         self.pcsx2_exe = QLineEdit()
-        self.pcsx2_exe.setPlaceholderText("Path to pcsx2(.exe) for test launch (optional)")
+        self.pcsx2_exe.setPlaceholderText("Path to pcsx2.exe (optional)")
+        self.pcsx2_exe.setToolTip("PCSX2 executable for quick launch")
         btn_pcsx2 = QPushButton("Browse…")
         btn_pcsx2.clicked.connect(lambda: self._pick_file(self.pcsx2_exe))
-        self.btn_launch = QPushButton("Launch PCSX2 (test)")
+        self.btn_launch = QPushButton("Launch PCSX2")
         self.btn_launch.clicked.connect(self._launch_pcsx2)
 
         cfgl.addRow("Omniconvert:", self._row(self.omniconvert_path, btn_omni))
-        cfgl.addRow(self._row(self.btn_enable_cheats, self.btn_enable_textures))
         cfgl.addRow("PCSX2 exe:", self._row(self.pcsx2_exe, btn_pcsx2, self.btn_launch))
         layout.addWidget(cfg)
 
-        # Profiles
-        prof = QGroupBox("Profiles")
-        pfl = QFormLayout(prof)
+        # Profiles (collapsible)
+        prof = QGroupBox("💾 Game Profiles")
+        prof.setCheckable(True)
+        prof.setChecked(False)
+        prof.setToolTip("Save game configurations for quick access")
+        pfl = QVBoxLayout(prof)
+        
+        profile_form = QWidget()
+        profile_form_layout = QFormLayout(profile_form)
         self.profile_title = QLineEdit()
         self.profile_serial = QLineEdit()
         self.profile_crc = QLineEdit()
-        self.btn_profile_save = QPushButton("Save/Update Profile")
+        profile_form_layout.addRow("Title:", self.profile_title)
+        profile_form_layout.addRow("Serial:", self.profile_serial)
+        profile_form_layout.addRow("CRC:", self.profile_crc)
+        pfl.addWidget(profile_form)
+        
+        profile_btns = QWidget()
+        profile_btns_layout = QHBoxLayout(profile_btns)
+        profile_btns_layout.setContentsMargins(0, 0, 0, 0)
+        self.btn_profile_save = QPushButton("Save Profile")
         self.btn_profile_save.clicked.connect(self._save_profile)
-        self.btn_profile_export = QPushButton("Export Profiles JSON")
+        self.btn_profile_export = QPushButton("Export")
         self.btn_profile_export.clicked.connect(self._export_profiles)
-        self.btn_profile_import = QPushButton("Import Profiles JSON")
+        self.btn_profile_import = QPushButton("Import")
         self.btn_profile_import.clicked.connect(self._import_profiles)
+        profile_btns_layout.addWidget(self.btn_profile_save)
+        profile_btns_layout.addWidget(self.btn_profile_export)
+        profile_btns_layout.addWidget(self.btn_profile_import)
+        pfl.addWidget(profile_btns)
+        
         self.profiles_list = QListWidget()
         self.profiles: Dict[str, Dict] = {}
         self.profiles_list.itemSelectionChanged.connect(self._load_selected_profile)
-
-        pfl.addRow("Title:", self.profile_title)
-        pfl.addRow("Serial:", self.profile_serial)
-        pfl.addRow("CRC:", self.profile_crc)
-        pfl.addRow(self._row(self.btn_profile_save, self.btn_profile_export, self.btn_profile_import))
+        pfl.addWidget(self.profiles_list)
+        
         layout.addWidget(prof)
-        layout.addWidget(self.profiles_list)
 
         layout.addStretch(1)
+        
+        # Set the container as the scroll area's widget
+        scroll.setWidget(container)
+        
+        # Set the scroll area as the main layout for this tab
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(scroll)
 
         self._detect()
 
@@ -5190,9 +5394,9 @@ class SettingsTab(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PCSX2 Patch & Texture Manager")
+        self.setWindowTitle("PCSX2 Manager - Cheats & Textures")
         self.setWindowIcon(QIcon("logo.png"))
-        self.resize(1180, 780)
+        self.resize(1000, 700)
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
@@ -5201,10 +5405,10 @@ class MainWindow(QMainWindow):
         self.textures_tab = TexturesTab(self)
         self.settings_tab = SettingsTab(self)
 
-        self.tabs.addTab(self.cheats_tab, "Cheats (.pnach)")
-        self.tabs.addTab(self.bulk_tab, "Bulk Scanner")
-        self.tabs.addTab(self.textures_tab, "Texture Packs")
-        self.tabs.addTab(self.settings_tab, "Settings")
+        self.tabs.addTab(self.cheats_tab, "🎮 Cheats")
+        self.tabs.addTab(self.textures_tab, "🖼️ Textures")
+        self.tabs.addTab(self.bulk_tab, "📊 Bulk Scanner")
+        self.tabs.addTab(self.settings_tab, "⚙️ Settings")
 
         # Mirror initial resolver options into Bulk tab for convenience
         self.bulk_tab.chk_offline_lists.setChecked(self.cheats_tab.chk_offline_lists.isChecked())
@@ -5213,6 +5417,9 @@ class MainWindow(QMainWindow):
 
         self._build_menu()
         self.setAcceptDrops(True)
+        
+        # Show welcome message on first run
+        self._show_welcome_if_needed()
 
     def dragEnterEvent(self, e: QDragEnterEvent):
         if e.mimeData().hasUrls():
@@ -5244,16 +5451,47 @@ class MainWindow(QMainWindow):
     def _about(self):
         QMessageBox.information(
             self,
-            "About",
-            "PCSX2 Patch & Texture Manager\n\n"
-            "- RAW/PNACH import + auto-detect CRC/Serial\n"
-            "- Title resolver via local mapping (+ optional offline lists)\n"
-            "- Drag & Drop for .pnach/.zip/folders\n"
-            "- Texture installer with auto-CRC suggestion\n"
-            "- Omniconvert integration hook (optional)\n"
-            "- Best-effort INI toggles + test launch\n"
-            "- Per-game profiles (JSON)\n"
+            "About PCSX2 Manager",
+            "<h2>PCSX2 Manager</h2>"
+            "<p><b>Version 2.0</b></p>"
+            "<p>A simplified tool for managing PCSX2 cheats and texture packs.</p>"
+            "<br>"
+            "<p><b>Features:</b></p>"
+            "<ul>"
+            "<li>Easy cheat installation with online database</li>"
+            "<li>Automatic game detection</li>"
+            "<li>Texture pack management</li>"
+            "<li>Drag & drop support</li>"
+            "<li>Bulk game scanning</li>"
+            "</ul>"
+            "<br>"
+            "<p><i>Tip: Expand the 'Quick Start Guide' for help!</i></p>"
         )
+    
+    def _show_welcome_if_needed(self):
+        """Show welcome dialog on first run"""
+        settings = QSettings('PCSX2-Manager', 'PatchTextureManager')
+        if not settings.value('welcome_shown', False):
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Welcome to PCSX2 Manager!")
+            msg.setTextFormat(Qt.RichText)
+            msg.setText(
+                "<h2>Welcome! 👋</h2>"
+                "<p>This tool helps you easily add cheats and texture packs to PCSX2.</p>"
+                "<br>"
+                "<p><b>Quick Start:</b></p>"
+                "<ol>"
+                "<li>Go to <b>Settings</b> and verify your PCSX2 folder</li>"
+                "<li>In the <b>Cheats</b> tab, enter a game serial (e.g., SLUS-12345)</li>"
+                "<li>Click <b>Fetch Online Cheats</b> to download cheats</li>"
+                "<li>Click <b>Save to PCSX2</b> to install them</li>"
+                "</ol>"
+                "<br>"
+                "<p><i>Tip: You can drag & drop .pnach files and texture packs!</i></p>"
+            )
+            msg.setStandardButtons(QMessageBox.Ok)
+            msg.exec()
+            settings.setValue('welcome_shown', True)
 
 
 def main():
