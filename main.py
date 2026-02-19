@@ -1388,13 +1388,13 @@ class CheatsTab(QWidget):
         letter_layout.addStretch()
         browser_layout.addWidget(letter_row)
         
-        # Store current filter state
-        self._current_letter_filter = None
-        self._current_search = ""
-        
         # Game list with search results
         game_list_label = QLabel("<b>Available Games:</b>")
         browser_layout.addWidget(game_list_label)
+        
+        # Store current filter state (initialize BEFORE populate_game_list)
+        self._current_letter_filter = None
+        self._current_search = ""
         
         self.game_list_widget = QListWidget()
         self.game_list_widget.itemSelectionChanged.connect(self._on_game_list_selected)
@@ -1418,19 +1418,9 @@ class CheatsTab(QWidget):
         region_layout.addWidget(self.region_info_label)
         browser_layout.addWidget(region_row)
         
-        # Cheats list with search/filter
-        cheats_header_layout = QHBoxLayout()
+        # Cheats list with checkboxes
         cheats_label = QLabel("<b>Available Cheats:</b>")
-        cheats_header_layout.addWidget(cheats_label)
-        
-        cheats_header_layout.addStretch()
-        cheats_header_layout.addWidget(QLabel("🔍 Filter Cheats:"))
-        self.cheat_search_box = QLineEdit()
-        self.cheat_search_box.setPlaceholderText("Search cheat name or description...")
-        self.cheat_search_box.setFixedWidth(250)
-        self.cheat_search_box.textChanged.connect(self._filter_cheats)
-        cheats_header_layout.addWidget(self.cheat_search_box)
-        browser_layout.addLayout(cheats_header_layout)
+        browser_layout.addWidget(cheats_label)
         
         self.cheats_tree = QTreeWidget()
         self.cheats_tree.setHeaderLabels(["Cheat Name", "Description"])
@@ -2443,30 +2433,23 @@ class CheatsTab(QWidget):
         letter_filter = self._current_letter_filter
         
         for game in self.cheats_database.get('games', []):
-            full_title = game.get('title', '').strip()
+            title = game.get('title', '').strip()
             
-            # Extract real title for filtering (skip CRC prefix like "A00ED0D5 - ")
-            import re
-            clean_title = full_title
-            crc_match = re.match(r'^[0-9A-Fa-f]{8}\s*-\s*(.*)', full_title)
-            if crc_match:
-                clean_title = crc_match.group(1).strip()
-                
             # Apply letter filter
             if letter_filter and letter_filter != "ALL":
-                first_char = clean_title[0].upper() if clean_title else ''
-                if letter_filter == "0-9":
+                first_char = title[0].upper() if title else ''
+                if letter_filter.startswith('0'):  # "0-9"
                     if not first_char.isdigit():
                         continue
                 elif first_char != letter_filter:
                     continue
             
             # Apply search filter
-            if search_text and search_text not in full_title.lower():
+            if search_text and search_text not in title.lower():
                 continue
             
             # Add to list
-            item = QListWidgetItem(full_title)
+            item = QListWidgetItem(title)
             item.setData(Qt.UserRole, game)
             self.game_list_widget.addItem(item)
         
@@ -2557,22 +2540,6 @@ class CheatsTab(QWidget):
             self.btn_select_all.setEnabled(True)
             self.btn_deselect_all.setEnabled(True)
             self.btn_install_selected.setEnabled(True)
-            
-        # Apply current filter
-        self._filter_cheats()
-
-    def _filter_cheats(self):
-        """Filter the cheats tree based on search text."""
-        search_text = self.cheat_search_box.text().lower().strip()
-        
-        # Iterate through all top-level items and hide those that don't match
-        for i in range(self.cheats_tree.topLevelItemCount()):
-            item = self.cheats_tree.topLevelItem(i)
-            name = item.text(0).lower()
-            desc = item.text(1).lower()
-            
-            matches = not search_text or search_text in name or search_text in desc
-            item.setHidden(not matches)
     
     def _select_all_cheats(self):
         """Select all cheats in the tree."""
@@ -2609,7 +2576,9 @@ class CheatsTab(QWidget):
         
         serial = region_data.get('serial', '')
         crc = region_data.get('crc', '')
-        game = self.game_selector.currentData()
+        # Get game from the selected game in game_list_widget
+        selected_game_items = self.game_list_widget.selectedItems()
+        game = selected_game_items[0].data(Qt.UserRole) if selected_game_items else None
         title = game.get('title', 'Unknown Game') if game else 'Unknown Game'
         
         # Check if cheats folder is set

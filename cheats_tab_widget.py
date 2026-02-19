@@ -36,49 +36,25 @@ class CheatsTabWidget(QWidget):
         layout = QVBoxLayout()
         
         # Search section
-        search_layout = QVBoxLayout()
-        search_input_layout = QHBoxLayout()
-        search_input_layout.addWidget(QLabel("Search Game:"))
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("Search Game:"))
         
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Enter game title or serial...")
         self.search_input.textChanged.connect(self.on_search_changed)
-        search_input_layout.addWidget(self.search_input)
+        search_layout.addWidget(self.search_input)
         
         # Region filter
-        search_input_layout.addWidget(QLabel("Region:"))
+        search_layout.addWidget(QLabel("Region:"))
         self.region_combo = QComboBox()
         self.region_combo.addItems(['All', 'NTSC-U', 'PAL', 'NTSC-J', 'NTSC-K'])
         self.region_combo.currentTextChanged.connect(self.on_search_changed)
-        search_input_layout.addWidget(self.region_combo)
+        search_layout.addWidget(self.region_combo)
         
         # Refresh button
         self.refresh_btn = QPushButton("Refresh Database")
         self.refresh_btn.clicked.connect(self.refresh_database)
-        search_input_layout.addWidget(self.refresh_btn)
-        
-        search_layout.addLayout(search_input_layout)
-
-        # Alphabetical filter
-        letter_row = QWidget()
-        letter_layout = QHBoxLayout(letter_row)
-        letter_layout.setContentsMargins(0, 0, 0, 0)
-        letter_layout.addWidget(QLabel("Filter:"))
-        
-        self.letter_buttons = {}
-        self.current_letter_filter = "ALL"
-        letters = "0-9 A B C D E F G H I J K L M N O P Q R S T U V W X Y Z ALL".split()
-        for letter in letters:
-            btn = QPushButton(letter)
-            btn.setCheckable(True)
-            btn.setMaximumWidth(35)
-            if letter == "ALL":
-                btn.setChecked(True)
-            btn.clicked.connect(lambda checked, l=letter: self.on_letter_filter_clicked(l))
-            self.letter_buttons[letter] = btn
-            letter_layout.addWidget(btn)
-        letter_layout.addStretch()
-        search_layout.addWidget(letter_row)
+        search_layout.addWidget(self.refresh_btn)
         
         layout.addLayout(search_layout)
         
@@ -99,20 +75,9 @@ class CheatsTabWidget(QWidget):
         layout.addWidget(self.results_table)
         
         # Cheats details section
-        cheats_header_layout = QHBoxLayout()
         cheats_label = QLabel("Available Cheats:")
         cheats_label.setFont(QFont("Arial", 10, QFont.Bold))
-        cheats_header_layout.addWidget(cheats_label)
-        
-        cheats_header_layout.addStretch()
-        cheats_header_layout.addWidget(QLabel("Search Cheat:"))
-        self.cheat_search_input = QLineEdit()
-        self.cheat_search_input.setPlaceholderText("Filter cheats by name...")
-        self.cheat_search_input.setFixedWidth(200)
-        self.cheat_search_input.textChanged.connect(self.filter_cheats)
-        cheats_header_layout.addWidget(self.cheat_search_input)
-        
-        layout.addLayout(cheats_header_layout)
+        layout.addWidget(cheats_label)
         
         self.cheats_table = QTableWidget()
         self.cheats_table.setColumnCount(3)
@@ -192,46 +157,19 @@ class CheatsTabWidget(QWidget):
         """Handle search input changes."""
         self.populate_results_table()
     
-    def on_letter_filter_clicked(self, letter):
-        """Handle alphabetical filter clicks."""
-        self.current_letter_filter = letter
-        
-        # Update button states
-        for l, btn in self.letter_buttons.items():
-            btn.setChecked(l == letter)
-            
-        self.populate_results_table()
-    
     def populate_results_table(self):
         """Populate results table based on search criteria."""
         search_text = self.search_input.text().lower().strip()
         region_filter = self.region_combo.currentText()
-        letter_filter = self.current_letter_filter
         
         self.results_table.setRowCount(0)
         matches = []
         
         for game in self.cheats_database.get('games', []):
-            full_title = game.get('title', '').strip()
+            game_title = game.get('title', '').lower()
             
-            # Extract real title for filtering (skip CRC prefix like "A00ED0D5 - ")
-            import re
-            clean_title = full_title
-            crc_match = re.match(r'^[0-9A-Fa-f]{8}\s*-\s*(.*)', full_title)
-            if crc_match:
-                clean_title = crc_match.group(1).strip()
-                
-            # Apply alphabetical filter
-            if letter_filter != "ALL":
-                first_char = clean_title[0].upper() if clean_title else ""
-                if letter_filter == "0-9":
-                    if not first_char.isdigit():
-                        continue
-                elif first_char != letter_filter:
-                    continue
-
             # Check if game matches search
-            if search_text and search_text not in full_title.lower():
+            if search_text and search_text not in game_title:
                 # Check serial too
                 found = False
                 for region_data in game.get('regions', {}).values():
@@ -298,25 +236,11 @@ class CheatsTabWidget(QWidget):
                         })
                         return
     
-    def filter_cheats(self):
-        """Filter the cheats table based on cheat search input."""
-        self.display_cheats(self.current_game_cheats)
-
     def display_cheats(self, cheats: list):
         """Display cheats in the table."""
         self.cheats_table.setRowCount(0)
         
-        search_text = self.cheat_search_input.text().lower().strip()
-        
-        filtered_cheats = []
-        for cheat in cheats:
-            name = cheat.get('name', 'Unknown')
-            description = cheat.get('description', '')
-            if search_text and search_text not in name.lower() and search_text not in description.lower():
-                continue
-            filtered_cheats.append(cheat)
-
-        for row, cheat in enumerate(filtered_cheats):
+        for row, cheat in enumerate(cheats):
             self.cheats_table.insertRow(row)
             
             name = cheat.get('name', 'Unknown')
@@ -329,10 +253,10 @@ class CheatsTabWidget(QWidget):
             self.cheats_table.setItem(row, 1, QTableWidgetItem(codes))
             self.cheats_table.setItem(row, 2, QTableWidgetItem(description))
         
-        if filtered_cheats:
-            self.info_label.setText(f"Showing {len(filtered_cheats)} of {len(cheats)} cheats")
+        if cheats:
+            self.info_label.setText(f"Found {len(cheats)} cheats for selected game")
         else:
-            self.info_label.setText("No cheats matching search" if search_text else "No cheats available")
+            self.info_label.setText("No cheats available for this game")
     
     def export_cheats(self, game_title: str, output_path: str):
         """Export selected game cheats to a file."""
