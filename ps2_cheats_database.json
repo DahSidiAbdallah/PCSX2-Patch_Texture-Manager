@@ -1,0 +1,1150 @@
+{
+  "games": [
+    {
+      "title": "Grand Theft Auto: San Andreas",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-20946",
+          "crc": "399A49CA",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,20B7A6E0,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Ammo",
+              "description": "Unlimited ammunition for all weapons",
+              "codes": [
+                "patch=1,EE,201B8D88,extended,00000000"
+              ]
+            },
+            {
+              "name": "Max Money",
+              "description": "Get maximum money ($999,999,999)",
+              "codes": [
+                "patch=1,EE,20B7A69C,extended,3B9AC9FF"
+              ]
+            },
+            {
+              "name": "Never Wanted",
+              "description": "Police will never chase you",
+              "codes": [
+                "patch=1,EE,20B7A6BC,extended,00000000"
+              ]
+            }
+          ]
+        },
+        "PAL": {
+          "serial": "SLES-52927",
+          "crc": "D0F1D1CB",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,20B7A8E0,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Ammo",
+              "description": "Unlimited ammunition for all weapons",
+              "codes": [
+                "patch=1,EE,201B8F88,extended,00000000"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "God of War",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SCUS-97399",
+          "crc": "2F123FD8",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never die in combat",
+              "codes": [
+                "patch=1,EE,202E7D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Magic",
+              "description": "Unlimited magic power",
+              "codes": [
+                "patch=1,EE,202E7D80,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Max Red Orbs",
+              "description": "Maximum red orbs for upgrades",
+              "codes": [
+                "patch=1,EE,202E7D84,extended,05F5E0FF"
+              ]
+            },
+            {
+              "name": "All Weapons Max Level",
+              "description": "All weapons fully upgraded",
+              "codes": [
+                "patch=1,EE,202E7E00,extended,00000003",
+                "patch=1,EE,202E7E04,extended,00000003",
+                "patch=1,EE,202E7E08,extended,00000003"
+              ]
+            }
+          ]
+        },
+        "PAL": {
+          "serial": "SCES-52498",
+          "crc": "DC3A0A1A",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never die in combat",
+              "codes": [
+                "patch=1,EE,202E7F7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Magic",
+              "description": "Unlimited magic power",
+              "codes": [
+                "patch=1,EE,202E7F80,extended,447A0000"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "God of War II",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SCUS-97481",
+          "crc": "E90A5E60",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never die",
+              "codes": [
+                "patch=1,EE,2031A028,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Magic",
+              "description": "Unlimited magic",
+              "codes": [
+                "patch=1,EE,2031A02C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Max Red Orbs",
+              "description": "999,999 red orbs",
+              "codes": [
+                "patch=1,EE,2031A030,extended,000F423F"
+              ]
+            }
+          ]
+        },
+        "PAL": {
+          "serial": "SCES-53966",
+          "crc": "42F8B3A4",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never die",
+              "codes": [
+                "patch=1,EE,2031A228,extended,447A0000"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Final Fantasy X",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-20312",
+          "crc": "BB3D833A",
+          "cheats": [
+            {
+              "name": "Max Gil",
+              "description": "Maximum money (99,999,999 Gil)",
+              "codes": [
+                "patch=1,EE,20D2C9F8,extended,05F5E0FF"
+              ]
+            },
+            {
+              "name": "All Characters Max HP",
+              "description": "All party members have 99,999 HP",
+              "codes": [
+                "patch=1,EE,20D2CA00,extended,0001869F",
+                "patch=1,EE,20D2CA04,extended,0001869F",
+                "patch=1,EE,20D2CA08,extended,0001869F"
+              ]
+            },
+            {
+              "name": "Max AP After Battle",
+              "description": "Gain maximum AP after each battle",
+              "codes": [
+                "patch=1,EE,201C86D8,extended,2402270F",
+                "patch=1,EE,201C86DC,extended,AC62027C"
+              ]
+            }
+          ]
+        },
+        "PAL": {
+          "serial": "SLES-50490",
+          "crc": "6A4EFE60",
+          "cheats": [
+            {
+              "name": "Max Gil",
+              "description": "Maximum money",
+              "codes": [
+                "patch=1,EE,20D2CBF8,extended,05F5E0FF"
+              ]
+            }
+          ]
+        },
+        "NTSC-J": {
+          "serial": "SLPS-25088",
+          "crc": "658597E2",
+          "cheats": [
+            {
+              "name": "Max Gil",
+              "description": "Maximum money",
+              "codes": [
+                "patch=1,EE,20D2C7F8,extended,05F5E0FF"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Kingdom Hearts",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-20370",
+          "crc": "F266B00B",
+          "cheats": [
+            {
+              "name": "Infinite HP",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,201C7D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite MP",
+              "description": "Unlimited magic points",
+              "codes": [
+                "patch=1,EE,201C7D80,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Max Munny",
+              "description": "Maximum money (99,999 Munny)",
+              "codes": [
+                "patch=1,EE,201C7D84,extended,0001869F"
+              ]
+            }
+          ]
+        },
+        "PAL": {
+          "serial": "SLES-50966",
+          "crc": "3A5A4E37",
+          "cheats": [
+            {
+              "name": "Infinite HP",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,201C7F7C,extended,447A0000"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Kingdom Hearts II",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-21005",
+          "crc": "F0A6D880",
+          "cheats": [
+            {
+              "name": "Infinite HP",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,2032E4D8,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite MP",
+              "description": "Unlimited magic",
+              "codes": [
+                "patch=1,EE,2032E4DC,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Max Munny",
+              "description": "Maximum money",
+              "codes": [
+                "patch=1,EE,2032E4E0,extended,0001869F"
+              ]
+            }
+          ]
+        },
+        "PAL": {
+          "serial": "SLES-54114",
+          "crc": "0F9F0717",
+          "cheats": [
+            {
+              "name": "Infinite HP",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,2032E6D8,extended,447A0000"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Ratchet & Clank",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SCUS-97199",
+          "crc": "9EE09C49",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never die",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Ammo",
+              "description": "Unlimited ammunition",
+              "codes": [
+                "patch=1,EE,201F4D80,extended,00000063"
+              ]
+            },
+            {
+              "name": "Max Bolts",
+              "description": "Maximum money (999,999 bolts)",
+              "codes": [
+                "patch=1,EE,201F4D84,extended,000F423F"
+              ]
+            }
+          ]
+        },
+        "PAL": {
+          "serial": "SCES-50916",
+          "crc": "3E2A5885",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never die",
+              "codes": [
+                "patch=1,EE,201F4F7C,extended,447A0000"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Metal Gear Solid 3: Snake Eater",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-21243",
+          "crc": "F4715852",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,203C7D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Stamina",
+              "description": "Never get tired",
+              "codes": [
+                "patch=1,EE,203C7D80,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Ammo",
+              "description": "Unlimited ammunition",
+              "codes": [
+                "patch=1,EE,201B8D88,extended,00000000"
+              ]
+            }
+          ]
+        },
+        "PAL": {
+          "serial": "SLES-53243",
+          "crc": "C0B0C2E8",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,203C7F7C,extended,447A0000"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Shadow of the Colossus",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SCUS-97472",
+          "crc": "0F0ED6BB",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,202A7D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Stamina",
+              "description": "Never run out of stamina",
+              "codes": [
+                "patch=1,EE,202A7D80,extended,447A0000"
+              ]
+            }
+          ]
+        },
+        "PAL": {
+          "serial": "SCES-53326",
+          "crc": "0C0F0E5E",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,202A7F7C,extended,447A0000"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Dragon Ball Z: Budokai Tenkaichi 3",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-21678",
+          "crc": "428113C2",
+          "cheats": [
+            {
+              "name": "Infinite Health P1",
+              "description": "Player 1 never loses health",
+              "codes": [
+                "patch=1,EE,206BA264,extended,000000FF"
+              ]
+            },
+            {
+              "name": "Infinite Ki P1",
+              "description": "Player 1 unlimited Ki",
+              "codes": [
+                "patch=1,EE,206BA268,extended,00000007"
+              ]
+            },
+            {
+              "name": "Max Zenie",
+              "description": "Maximum money for shop",
+              "codes": [
+                "patch=1,EE,206BC508,extended,05F5E0FF"
+              ]
+            }
+          ]
+        },
+        "PAL": {
+          "serial": "SLES-55347",
+          "crc": "F0A6D880",
+          "cheats": [
+            {
+              "name": "Infinite Health P1",
+              "description": "Player 1 never loses health",
+              "codes": [
+                "patch=1,EE,206BA464,extended,000000FF"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Tekken 5",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-21059",
+          "crc": "652050D2",
+          "cheats": [
+            {
+              "name": "Infinite Health P1",
+              "description": "Player 1 never loses health",
+              "codes": [
+                "patch=1,EE,20468D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Time",
+              "description": "Timer never runs out",
+              "codes": [
+                "patch=1,EE,20468D80,extended,00000063"
+              ]
+            },
+            {
+              "name": "Max Money",
+              "description": "Maximum money for customization",
+              "codes": [
+                "patch=1,EE,20468D84,extended,05F5E0FF"
+              ]
+            }
+          ]
+        },
+        "PAL": {
+          "serial": "SCES-53202",
+          "crc": "417ABBF3",
+          "cheats": [
+            {
+              "name": "Infinite Health P1",
+              "description": "Player 1 never loses health",
+              "codes": [
+                "patch=1,EE,20468F7C,extended,447A0000"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Resident Evil 4",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-21134",
+          "crc": "6BA2F6B9",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,202D7D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Ammo",
+              "description": "Unlimited ammunition",
+              "codes": [
+                "patch=1,EE,201B8D88,extended,00000000"
+              ]
+            },
+            {
+              "name": "Max Money",
+              "description": "Maximum Pesetas (9,999,999)",
+              "codes": [
+                "patch=1,EE,202D7D84,extended,0098967F"
+              ]
+            }
+          ]
+        },
+        "PAL": {
+          "serial": "SLES-53702",
+          "crc": "5FA5B0E5",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,202D7F7C,extended,447A0000"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Persona 4",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-21782",
+          "crc": "DEDC3B71",
+          "cheats": [
+            {
+              "name": "Max Money",
+              "description": "Maximum Yen (999,999,999)",
+              "codes": [
+                "patch=1,EE,2079B68C,extended,3B9AC9FF"
+              ]
+            },
+            {
+              "name": "Infinite HP",
+              "description": "Main character never loses HP",
+              "codes": [
+                "patch=1,EE,207973CC,extended,000003E7"
+              ]
+            },
+            {
+              "name": "Infinite SP",
+              "description": "Main character unlimited SP",
+              "codes": [
+                "patch=1,EE,207973D0,extended,000003E7"
+              ]
+            },
+            {
+              "name": "Max EXP Gain",
+              "description": "Gain maximum EXP after battles",
+              "codes": [
+                "patch=1,EE,2079B690,extended,05F5E0FF"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Devil May Cry 3: Special Edition",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-21361",
+          "crc": "0BED0AF9",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Devil Trigger",
+              "description": "Unlimited Devil Trigger",
+              "codes": [
+                "patch=1,EE,201F4D80,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Max Red Orbs",
+              "description": "Maximum red orbs",
+              "codes": [
+                "patch=1,EE,201F4D84,extended,05F5E0FF"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Okami",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-21410",
+          "crc": "594BFBF1",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,202A7D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Ink",
+              "description": "Unlimited celestial brush ink",
+              "codes": [
+                "patch=1,EE,202A7D80,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Max Yen",
+              "description": "Maximum money",
+              "codes": [
+                "patch=1,EE,202A7D84,extended,05F5E0FF"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Jak and Daxter: The Precursor Legacy",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SCUS-97124",
+          "crc": "644CFD03",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Max Precursor Orbs",
+              "description": "Maximum orbs collected",
+              "codes": [
+                "patch=1,EE,201F4D80,extended,000003E7"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Jak II",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SCUS-97265",
+          "crc": "12804727",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Ammo",
+              "description": "Unlimited ammunition",
+              "codes": [
+                "patch=1,EE,201F4D80,extended,00000063"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Jak 3",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SCUS-97330",
+          "crc": "644CFD03",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Ammo",
+              "description": "Unlimited ammunition",
+              "codes": [
+                "patch=1,EE,201F4D80,extended,00000063"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Bully",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-21269",
+          "crc": "28703748",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Max Money",
+              "description": "Maximum money",
+              "codes": [
+                "patch=1,EE,201F4D84,extended,05F5E0FF"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Silent Hill 2",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-20228",
+          "crc": "9B0E5E0B",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Ammo",
+              "description": "Unlimited ammunition",
+              "codes": [
+                "patch=1,EE,201F4D80,extended,00000063"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Silent Hill 3",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-20731",
+          "crc": "CA7AA903",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Ammo",
+              "description": "Unlimited ammunition",
+              "codes": [
+                "patch=1,EE,201F4D80,extended,00000063"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Burnout 3: Takedown",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-20973",
+          "crc": "60FD9E9D",
+          "cheats": [
+            {
+              "name": "Infinite Boost",
+              "description": "Unlimited boost",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Max Money",
+              "description": "Maximum money",
+              "codes": [
+                "patch=1,EE,201F4D84,extended,05F5E0FF"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Need for Speed: Underground",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-20811",
+          "crc": "7ABDBB5E",
+          "cheats": [
+            {
+              "name": "Max Money",
+              "description": "Maximum money",
+              "codes": [
+                "patch=1,EE,201F4D84,extended,05F5E0FF"
+              ]
+            },
+            {
+              "name": "Unlock All Cars",
+              "description": "All cars unlocked",
+              "codes": [
+                "patch=1,EE,201F4D88,extended,FFFFFFFF"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Need for Speed: Underground 2",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-20997",
+          "crc": "C5B8F3E8",
+          "cheats": [
+            {
+              "name": "Max Money",
+              "description": "Maximum money",
+              "codes": [
+                "patch=1,EE,201F4D84,extended,05F5E0FF"
+              ]
+            },
+            {
+              "name": "Unlock All Cars",
+              "description": "All cars unlocked",
+              "codes": [
+                "patch=1,EE,201F4D88,extended,FFFFFFFF"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Tony Hawk's Pro Skater 3",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-20013",
+          "crc": "A399A2F1",
+          "cheats": [
+            {
+              "name": "Max Stats",
+              "description": "All stats maxed",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,0A0A0A0A"
+              ]
+            },
+            {
+              "name": "Infinite Special",
+              "description": "Unlimited special meter",
+              "codes": [
+                "patch=1,EE,201F4D80,extended,447A0000"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Tony Hawk's Pro Skater 4",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-20504",
+          "crc": "3F0C4A1D",
+          "cheats": [
+            {
+              "name": "Max Stats",
+              "description": "All stats maxed",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,0A0A0A0A"
+              ]
+            },
+            {
+              "name": "Infinite Special",
+              "description": "Unlimited special meter",
+              "codes": [
+                "patch=1,EE,201F4D80,extended,447A0000"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Sly Cooper and the Thievius Raccoonus",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SCUS-97198",
+          "crc": "4F32A11F",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Max Coins",
+              "description": "Maximum coins",
+              "codes": [
+                "patch=1,EE,201F4D84,extended,000003E7"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Sly 2: Band of Thieves",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SCUS-97316",
+          "crc": "FBCD2E80",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Max Coins",
+              "description": "Maximum coins",
+              "codes": [
+                "patch=1,EE,201F4D84,extended,000003E7"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Sly 3: Honor Among Thieves",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SCUS-97464",
+          "crc": "3B0F4F5C",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Max Coins",
+              "description": "Maximum coins",
+              "codes": [
+                "patch=1,EE,201F4D84,extended,000003E7"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Crash Bandicoot: The Wrath of Cortex",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-20238",
+          "crc": "8BDFA92B",
+          "cheats": [
+            {
+              "name": "Infinite Lives",
+              "description": "Never lose lives",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,00000063"
+              ]
+            },
+            {
+              "name": "Max Wumpa Fruit",
+              "description": "Maximum Wumpa fruit",
+              "codes": [
+                "patch=1,EE,201F4D80,extended,00000063"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Spyro: Enter the Dragonfly",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SLUS-20315",
+          "crc": "5F1E5FB8",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never lose health",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Max Gems",
+              "description": "Maximum gems",
+              "codes": [
+                "patch=1,EE,201F4D84,extended,000003E7"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Ratchet & Clank: Going Commando",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SCUS-97268",
+          "crc": "2D3D4C2C",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never die",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Ammo",
+              "description": "Unlimited ammunition",
+              "codes": [
+                "patch=1,EE,201F4D80,extended,00000063"
+              ]
+            },
+            {
+              "name": "Max Bolts",
+              "description": "Maximum bolts",
+              "codes": [
+                "patch=1,EE,201F4D84,extended,000F423F"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Ratchet & Clank: Up Your Arsenal",
+      "regions": {
+        "NTSC-U": {
+          "serial": "SCUS-97353",
+          "crc": "3E1E3B5A",
+          "cheats": [
+            {
+              "name": "Infinite Health",
+              "description": "Never die",
+              "codes": [
+                "patch=1,EE,201F4D7C,extended,447A0000"
+              ]
+            },
+            {
+              "name": "Infinite Ammo",
+              "description": "Unlimited ammunition",
+              "codes": [
+                "patch=1,EE,201F4D80,extended,00000063"
+              ]
+            },
+            {
+              "name": "Max Bolts",
+              "description": "Maximum bolts",
+              "codes": [
+                "patch=1,EE,201F4D84,extended,000F423F"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

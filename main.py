@@ -24,7 +24,7 @@ import logging
 
 from PySide6.QtCore import Qt, QThread, Signal, QSize, QSettings, QTimer
 import sys
-from PySide6.QtGui import QIcon, QPixmap, QDragEnterEvent, QDropEvent, QAction
+from PySide6.QtGui import QIcon, QPixmap, QDragEnterEvent, QDropEvent, QAction, QPainter, QColor, QPen
 import concurrent.futures
 
 # Registry to keep running QThread-based workers alive if callers don't hold a reference
@@ -1127,12 +1127,23 @@ class CheatsTab(QWidget):
     def __init__(self, parent: 'MainWindow'):
         super().__init__()
         self.parent = parent
+        self._shutting_down = False  # Flag to prevent new workers during shutdown
         self.mapping: Dict[str, str] = {}  # CRC/Serial -> Title
         # persistent mapping store path (auto-load/save)
         self.map_store_path = os.path.join(os.path.expanduser("~"), ".pcsx2_manager_mapping.json")
         # create minimal widgets early so helper methods can use them safely
         self.list = QListWidget()
         self.progress = QProgressBar()
+        
+        # Debounce timer for auto-title to prevent freezing on every keystroke
+        self._autotitle_timer = QTimer()
+        self._autotitle_timer.setSingleShot(True)
+        self._autotitle_timer.setInterval(500)  # 500ms delay
+        self._autotitle_timer.timeout.connect(self._do_autotitle)
+        
+        # Load built-in cheats database
+        self.cheats_database = self._load_cheats_database()
+        
         self._build_ui()
         # load persisted mapping if present
         try:
@@ -1163,9 +1174,34 @@ class CheatsTab(QWidget):
             return True
         except Exception:
             return False
+    
+    def _load_cheats_database(self) -> dict:
+        """Load the built-in PS2 cheats database."""
+        try:
+            # Try merged database first (2,680 games)
+            db_paths = [
+                os.path.join(os.path.dirname(__file__), 'ps2_cheats_database_merged.json'),
+                os.path.join(os.path.dirname(__file__), 'ps2_cheats_database.json')
+            ]
+            for db_path in db_paths:
+                if os.path.isfile(db_path):
+                    with open(db_path, 'r', encoding='utf-8') as f:
+                        db = json.load(f)
+                        games_count = len(db.get('games', []))
+                        logger.info(f"[CheatsTab] Loaded {games_count} games from {os.path.basename(db_path)}")
+                        return db
+        except Exception as e:
+            try:
+                logger.debug(f"[CheatsTab] Failed to load cheats database: {e}")
+            except Exception:
+                pass
+        return {"games": []}
 
     # ---- Worker management to prevent GC / crashes ----
     def _start_worker(self, worker: QThread):
+        # Don't start new workers if shutting down
+        if getattr(self, '_shutting_down', False):
+            return
         # Keep a strong reference so the worker isn't GC'd mid-run
         if not hasattr(self, "_workers"):
             self._workers = []
@@ -1308,6 +1344,128 @@ class CheatsTab(QWidget):
         qs_layout.addWidget(quick_start_text)
         self.quick_start_group.setLayout(qs_layout)
         layout.addWidget(self.quick_start_group)
+        
+        # Built-in Cheats Browser (NEW FEATURE)
+        self.browser_group = QGroupBox("🎮 Browse Built-in Cheats Database")
+        self.browser_group.setCheckable(True)
+        self.browser_group.setChecked(True)  # Open by default
+        browser_layout = QVBoxLayout()
+        
+        # Info label
+        browser_info = QLabel(
+            f"<b>{len(self.cheats_database.get('games', []))} popular PS2 games</b> with cheats for different regions (PAL, NTSC-U, NTSC-J)<br>"
+            "Select a game and region, choose cheats, then click 'Install Selected Cheats'"
+        )
+        browser_info.setWordWrap(True)
+        browser_layout.addWidget(browser_info)
+        
+        # Game selector with search and letter filter
+        search_label = QLabel("🔍 <b>Search Games:</b>")
+        browser_layout.addWidget(search_label)
+        
+        # Search box
+        self.game_search = QLineEdit()
+        self.game_search.setPlaceholderText("Type game title to search... (e.g., 'Final Fantasy', 'Metal Gear')")
+        self.game_search.textChanged.connect(self._on_game_search_changed)
+        browser_layout.addWidget(self.game_search)
+        
+        # Letter filter buttons
+        letter_row = QWidget()
+        letter_layout = QHBoxLayout(letter_row)
+        letter_layout.setContentsMargins(0, 5, 0, 5)
+        letter_layout.addWidget(QLabel("Filter by first letter:"))
+        
+        self.letter_buttons = {}
+        letters = "0-9 A B C D E F G H I J K L M N O P Q R S T U V W X Y Z ALL".split()
+        for letter in letters:
+            btn = QPushButton(letter)
+            btn.setMaximumWidth(40)
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda checked, l=letter: self._on_letter_filter_clicked(l))
+            self.letter_buttons[letter] = btn
+            letter_layout.addWidget(btn)
+        
+        letter_layout.addStretch()
+        browser_layout.addWidget(letter_row)
+        
+        # Store current filter state
+        self._current_letter_filter = None
+        self._current_search = ""
+        
+        # Game list with search results
+        game_list_label = QLabel("<b>Available Games:</b>")
+        browser_layout.addWidget(game_list_label)
+        
+        self.game_list_widget = QListWidget()
+        self.game_list_widget.itemSelectionChanged.connect(self._on_game_list_selected)
+        self.game_list_widget.setMinimumHeight(150)
+        self._populate_game_list()
+        browser_layout.addWidget(self.game_list_widget)
+        
+        # Region selector
+        region_row = QWidget()
+        region_layout = QHBoxLayout(region_row)
+        region_layout.setContentsMargins(0, 5, 0, 5)
+        region_layout.addWidget(QLabel("Region:"))
+        self.region_selector = QComboBox()
+        self.region_selector.addItem("-- Select region --", None)
+        self.region_selector.currentIndexChanged.connect(self._on_region_selected)
+        region_layout.addWidget(self.region_selector, 1)
+        
+        # Serial/CRC info display
+        self.region_info_label = QLabel("")
+        self.region_info_label.setStyleSheet("QLabel { color: #666; font-size: 11px; padding: 5px; }")
+        region_layout.addWidget(self.region_info_label)
+        browser_layout.addWidget(region_row)
+        
+        # Cheats list with search/filter
+        cheats_header_layout = QHBoxLayout()
+        cheats_label = QLabel("<b>Available Cheats:</b>")
+        cheats_header_layout.addWidget(cheats_label)
+        
+        cheats_header_layout.addStretch()
+        cheats_header_layout.addWidget(QLabel("🔍 Filter Cheats:"))
+        self.cheat_search_box = QLineEdit()
+        self.cheat_search_box.setPlaceholderText("Search cheat name or description...")
+        self.cheat_search_box.setFixedWidth(250)
+        self.cheat_search_box.textChanged.connect(self._filter_cheats)
+        cheats_header_layout.addWidget(self.cheat_search_box)
+        browser_layout.addLayout(cheats_header_layout)
+        
+        self.cheats_tree = QTreeWidget()
+        self.cheats_tree.setHeaderLabels(["Cheat Name", "Description"])
+        self.cheats_tree.setColumnWidth(0, 250)
+        self.cheats_tree.setAlternatingRowColors(True)
+        self.cheats_tree.setMinimumHeight(200)
+        browser_layout.addWidget(self.cheats_tree)
+        
+        # Action buttons
+        browser_actions = QWidget()
+        browser_actions_layout = QHBoxLayout(browser_actions)
+        browser_actions_layout.setContentsMargins(0, 5, 0, 5)
+        
+        self.btn_select_all = QPushButton("✓ Select All")
+        self.btn_select_all.clicked.connect(self._select_all_cheats)
+        self.btn_select_all.setEnabled(False)
+        
+        self.btn_deselect_all = QPushButton("✗ Deselect All")
+        self.btn_deselect_all.clicked.connect(self._deselect_all_cheats)
+        self.btn_deselect_all.setEnabled(False)
+        
+        self.btn_install_selected = QPushButton("💾 Install Selected Cheats")
+        self.btn_install_selected.setMinimumHeight(40)
+        self.btn_install_selected.setStyleSheet("QPushButton { font-weight: bold; background-color: #4CAF50; color: white; }")
+        self.btn_install_selected.clicked.connect(self._install_selected_cheats)
+        self.btn_install_selected.setEnabled(False)
+        
+        browser_actions_layout.addWidget(self.btn_select_all)
+        browser_actions_layout.addWidget(self.btn_deselect_all)
+        browser_actions_layout.addStretch()
+        browser_actions_layout.addWidget(self.btn_install_selected)
+        browser_layout.addWidget(browser_actions)
+        
+        self.browser_group.setLayout(browser_layout)
+        layout.addWidget(self.browser_group)
         
         # Target directories panel (simplified, collapsible)
         self.paths_group = QGroupBox("⚙️ PCSX2 Folders (Auto-detected)")
@@ -1512,9 +1670,9 @@ class CheatsTab(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.addWidget(scroll)
 
-        # QoL: auto-title when user edits CRC/Serial
-        self.serial_edit.textChanged.connect(self._maybe_autotitle)
-        self.crc_edit.textChanged.connect(self._maybe_autotitle)
+        # QoL: auto-title when user edits CRC/Serial (debounced to prevent freezing)
+        self.serial_edit.textChanged.connect(lambda: self._autotitle_timer.start())
+        self.crc_edit.textChanged.connect(lambda: self._autotitle_timer.start())
 
         # Drag & Drop
         self.setAcceptDrops(True)
@@ -2242,6 +2400,11 @@ class CheatsTab(QWidget):
 
     # QoL: auto-title when user types CRC/Serial
     def _maybe_autotitle(self):
+        """Debounced trigger for auto-title lookup. Restarts timer on each keystroke."""
+        self._autotitle_timer.start()
+    
+    def _do_autotitle(self):
+        """Actual auto-title lookup logic, called after debounce delay."""
         mapping = getattr(self, 'mapping', {}) or {}
         keys = []
         crc = normalize_crc(self.crc_edit.text())
@@ -2268,7 +2431,257 @@ class CheatsTab(QWidget):
                         return
             worker = ResolveWorker(keys, mapping, use_bundled_lists=True, try_online=False)
             worker.resolved.connect(on_done)
-            worker.start()
+            self._start_worker(worker)
+    
+    # ---- Cheat Browser Methods ----
+    
+    def _populate_game_list(self):
+        """Populate the game list widget with all games (or filtered)."""
+        self.game_list_widget.clear()
+        
+        search_text = self._current_search.lower().strip()
+        letter_filter = self._current_letter_filter
+        
+        for game in self.cheats_database.get('games', []):
+            full_title = game.get('title', '').strip()
+            
+            # Extract real title for filtering (skip CRC prefix like "A00ED0D5 - ")
+            import re
+            clean_title = full_title
+            crc_match = re.match(r'^[0-9A-Fa-f]{8}\s*-\s*(.*)', full_title)
+            if crc_match:
+                clean_title = crc_match.group(1).strip()
+                
+            # Apply letter filter
+            if letter_filter and letter_filter != "ALL":
+                first_char = clean_title[0].upper() if clean_title else ''
+                if letter_filter == "0-9":
+                    if not first_char.isdigit():
+                        continue
+                elif first_char != letter_filter:
+                    continue
+            
+            # Apply search filter
+            if search_text and search_text not in full_title.lower():
+                continue
+            
+            # Add to list
+            item = QListWidgetItem(full_title)
+            item.setData(Qt.UserRole, game)
+            self.game_list_widget.addItem(item)
+        
+        # Show result count
+        count = self.game_list_widget.count()
+        if search_text or letter_filter:
+            search_info = f"Found {count} game(s)"
+            if search_text:
+                search_info += f" matching '{self._current_search}'"
+            if letter_filter and letter_filter != "ALL":
+                if search_text:
+                    search_info += f" starting with '{letter_filter}'"
+                else:
+                    search_info += f" starting with '{letter_filter}'"
+            self.game_list_widget.setToolTip(search_info)
+    
+    def _on_game_search_changed(self, text):
+        """Handle search text changes."""
+        self._current_search = text
+        self._populate_game_list()
+    
+    def _on_letter_filter_clicked(self, letter):
+        """Handle letter filter button clicks."""
+        # Toggle current filter or set new one
+        if self._current_letter_filter == letter:
+            self._current_letter_filter = None
+            self.letter_buttons[letter].setChecked(False)
+        else:
+            # Uncheck all other buttons
+            for btn in self.letter_buttons.values():
+                btn.setChecked(False)
+            # Check the clicked button
+            self.letter_buttons[letter].setChecked(True)
+            self._current_letter_filter = letter
+        
+        self._populate_game_list()
+    
+    def _on_game_list_selected(self):
+        """Handle game selection from the list."""
+        self.region_selector.clear()
+        self.region_selector.addItem("-- Select region --", None)
+        self.cheats_tree.clear()
+        self.region_info_label.setText("")
+        self.btn_select_all.setEnabled(False)
+        self.btn_deselect_all.setEnabled(False)
+        self.btn_install_selected.setEnabled(False)
+        
+        selected_items = self.game_list_widget.selectedItems()
+        if not selected_items:
+            return
+        
+        game = selected_items[0].data(Qt.UserRole)
+        if game and 'regions' in game:
+            for region_name in sorted(game['regions'].keys()):
+                self.region_selector.addItem(region_name, game['regions'][region_name])
+    
+    def _on_game_selected(self, index):
+        """Handle game selection in the browser (legacy - for compatibility)."""
+        # This is now replaced by _on_game_list_selected
+        pass
+    
+    def _on_region_selected(self, index):
+        """Handle region selection in the browser."""
+        self.cheats_tree.clear()
+        self.region_info_label.setText("")
+        self.btn_select_all.setEnabled(False)
+        self.btn_deselect_all.setEnabled(False)
+        self.btn_install_selected.setEnabled(False)
+        
+        region_data = self.region_selector.currentData()
+        if not region_data:
+            return
+        
+        # Display serial and CRC info
+        serial = region_data.get('serial', 'N/A')
+        crc = region_data.get('crc', 'N/A')
+        self.region_info_label.setText(f"Serial: {serial} | CRC: {crc}")
+        
+        # Populate cheats tree
+        cheats = region_data.get('cheats', [])
+        for cheat in cheats:
+            item = QTreeWidgetItem([cheat['name'], cheat['description']])
+            item.setCheckState(0, Qt.Unchecked)
+            item.setData(0, Qt.UserRole, cheat)  # Store cheat data
+            self.cheats_tree.addTopLevelItem(item)
+        
+        if cheats:
+            self.btn_select_all.setEnabled(True)
+            self.btn_deselect_all.setEnabled(True)
+            self.btn_install_selected.setEnabled(True)
+            
+        # Apply current filter
+        self._filter_cheats()
+
+    def _filter_cheats(self):
+        """Filter the cheats tree based on search text."""
+        search_text = self.cheat_search_box.text().lower().strip()
+        
+        # Iterate through all top-level items and hide those that don't match
+        for i in range(self.cheats_tree.topLevelItemCount()):
+            item = self.cheats_tree.topLevelItem(i)
+            name = item.text(0).lower()
+            desc = item.text(1).lower()
+            
+            matches = not search_text or search_text in name or search_text in desc
+            item.setHidden(not matches)
+    
+    def _select_all_cheats(self):
+        """Select all cheats in the tree."""
+        for i in range(self.cheats_tree.topLevelItemCount()):
+            item = self.cheats_tree.topLevelItem(i)
+            item.setCheckState(0, Qt.Checked)
+    
+    def _deselect_all_cheats(self):
+        """Deselect all cheats in the tree."""
+        for i in range(self.cheats_tree.topLevelItemCount()):
+            item = self.cheats_tree.topLevelItem(i)
+            item.setCheckState(0, Qt.Unchecked)
+    
+    def _install_selected_cheats(self):
+        """Install selected cheats to PCSX2."""
+        # Get selected cheats
+        selected_cheats = []
+        for i in range(self.cheats_tree.topLevelItemCount()):
+            item = self.cheats_tree.topLevelItem(i)
+            if item.checkState(0) == Qt.Checked:
+                cheat_data = item.data(0, Qt.UserRole)
+                if cheat_data:
+                    selected_cheats.append(cheat_data)
+        
+        if not selected_cheats:
+            QMessageBox.information(self, "No Cheats Selected", "Please select at least one cheat to install.")
+            return
+        
+        # Get region data for serial and CRC
+        region_data = self.region_selector.currentData()
+        if not region_data:
+            QMessageBox.warning(self, "No Region Selected", "Please select a region first.")
+            return
+        
+        serial = region_data.get('serial', '')
+        crc = region_data.get('crc', '')
+        game = self.game_selector.currentData()
+        title = game.get('title', 'Unknown Game') if game else 'Unknown Game'
+        
+        # Check if cheats folder is set
+        cheats_dir = self.cheats_dir.text().strip()
+        if not cheats_dir or not os.path.isdir(cheats_dir):
+            QMessageBox.warning(self, "Missing Cheats Folder", 
+                              "Please set a valid PCSX2 cheats folder path in the settings.")
+            return
+        
+        # Generate PNACH content
+        pnach_lines = [
+            f"// {title}",
+            f"// Serial: {serial}",
+            f"// CRC: {crc}",
+            f"// Generated by PCSX2 Manager",
+            f"// Selected {len(selected_cheats)} cheat(s)",
+            "",
+            "gametitle=" + title,
+            ""
+        ]
+        
+        for cheat in selected_cheats:
+            pnach_lines.append(f"// {cheat['name']}")
+            pnach_lines.append(f"// {cheat['description']}")
+            for code in cheat['codes']:
+                pnach_lines.append(code)
+            pnach_lines.append("")
+        
+        pnach_content = "\n".join(pnach_lines)
+        
+        # Save to file
+        if not crc:
+            QMessageBox.warning(self, "Missing CRC", "Cannot install cheats without a CRC value.")
+            return
+        
+        filename = f"{crc.upper()}.pnach"
+        filepath = os.path.join(cheats_dir, filename)
+        
+        try:
+            # Check if file exists
+            if os.path.isfile(filepath):
+                reply = QMessageBox.question(
+                    self, "File Exists",
+                    f"A cheat file for this game already exists:\n{filename}\n\nDo you want to overwrite it?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                if reply != QMessageBox.Yes:
+                    return
+            
+            # Write file
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(pnach_content)
+            
+            # Update mapping
+            if serial and title:
+                self.mapping[serial.upper()] = title
+                self.mapping[crc.upper()] = title
+                self.save_mapping()
+            
+            # Refresh list
+            self.refresh_list()
+            
+            # Show success message
+            QMessageBox.information(
+                self, "Cheats Installed Successfully",
+                f"Installed {len(selected_cheats)} cheat(s) to:\n{filepath}\n\n"
+                f"The cheats are now available in PCSX2!"
+            )
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Installation Failed", f"Failed to install cheats:\n{str(e)}")
 
     def _collect_invalid_raw_lines(self, text: str, limit: int = 6) -> List[str]:
         bad = []
@@ -2393,13 +2806,26 @@ class TexturesTab(QWidget):
     def __init__(self, parent: 'MainWindow'):
         super().__init__()
         self.parent = parent
+        self._shutting_down = False  # Flag to prevent new workers during shutdown
         # Thumbnail cache used for installed pack icons
         self._thumb_cache = os.path.join(os.path.expanduser("~"), ".pcsx2_manager_thumbs")
         try:
             os.makedirs(self._thumb_cache, exist_ok=True)
         except Exception:
             pass
+        
+        # Debounce timer for search filter to improve performance
+        self._filter_timer = QTimer()
+        self._filter_timer.setSingleShot(True)
+        self._filter_timer.setInterval(150)  # 150ms delay
+        self._filter_timer.timeout.connect(self._do_filter)
+        self._pending_filter_text = ""
+        
         self._build_ui()
+        
+        # Defer initial scan until after UI is fully initialized
+        # This prevents threading issues during startup
+        QTimer.singleShot(100, self._deferred_scan)
 
     def _preview_context_menu(self, pos):
         # Context menu for preview cover in TexturesTab
@@ -2627,12 +3053,6 @@ class TexturesTab(QWidget):
         self.btn_install_pack.setEnabled(False)
         self.btn_remove_pack.setEnabled(False)
 
-        # initial scan
-        try:
-            self.scan_installed_textures()
-        except Exception:
-            pass
-
         # Configure packs_list for better UX
         header = self.packs_list.header()
         header.setStretchLastSection(True)
@@ -2651,8 +3071,13 @@ class TexturesTab(QWidget):
         main_layout.addWidget(scroll)
 
     def _filter_packs(self, text: str):
-        """Hide list rows that do not match the search text."""
-        text = text.strip().lower()
+        """Debounced trigger for filtering. Stores text and restarts timer."""
+        self._pending_filter_text = text
+        self._filter_timer.start()
+    
+    def _do_filter(self):
+        """Actual filtering logic, called after debounce delay."""
+        text = self._pending_filter_text.strip().lower()
         for i in range(self.packs_list.topLevelItemCount()):
             it = self.packs_list.topLevelItem(i)
             serial = (it.text(0) or '').lower()
@@ -2662,6 +3087,9 @@ class TexturesTab(QWidget):
 
     # ---- Worker management to prevent GC / crashes ----
     def _start_worker(self, worker: QThread):
+        # Don't start new workers if shutting down
+        if getattr(self, '_shutting_down', False):
+            return
         # Keep a strong reference so the worker isn't GC'd mid-run
         if not hasattr(self, "_workers"):
             self._workers = []
@@ -2683,6 +3111,29 @@ class TexturesTab(QWidget):
             except Exception:
                 pass
         worker.start()
+    
+    def _deferred_scan(self):
+        """Perform initial texture scan after UI is fully initialized."""
+        try:
+            self.scan_installed_textures()
+        except Exception as e:
+            try:
+                logger.debug(f"[TexturesTab] deferred scan failed: {e}")
+            except Exception:
+                pass
+    
+    def cleanup_workers(self):
+        """Stop and cleanup all running workers."""
+        if hasattr(self, "_workers"):
+            for worker in list(self._workers):
+                try:
+                    if worker.isRunning():
+                        worker.quit()
+                        worker.wait(1000)  # Wait up to 1 second
+                    worker.deleteLater()
+                except Exception:
+                    pass
+            self._workers.clear()
 
     # Public helpers for DnD from Cheats tab
     def import_zip_path(self, path: str):
@@ -2765,8 +3216,11 @@ class TexturesTab(QWidget):
                 except Exception:
                     pass
                 it.setToolTip(0, tt)
-                # Always use an empty icon for the serial column; avoid embedding thumbnails here
-                it.setIcon(0, QIcon())
+                # Use the thumbnail if it was successfully created
+                if thumb and os.path.isfile(thumb):
+                    it.setIcon(0, QIcon(thumb))
+                else:
+                    it.setIcon(0, QIcon())
                 self.packs_list.addTopLevelItem(it)
 
             QMessageBox.information(self, "Imported (staged)", f"Imported ZIP into staging folder:\n{staging}\n\nPacks are available in the list and will be installed only when you click Install.")
@@ -3192,7 +3646,11 @@ class TexturesTab(QWidget):
                 except Exception:
                     pass
                 it.setToolTip(0, tt)
-                it.setIcon(0, QIcon())
+                # Use the thumbnail if it was successfully created
+                if thumb and os.path.isfile(thumb):
+                    it.setIcon(0, QIcon(thumb))
+                else:
+                    it.setIcon(0, QIcon())
                 self.packs_list.addTopLevelItem(it)
             # Refresh UI list but do not install any pack yet
             try:
@@ -3559,6 +4017,10 @@ class TexturesTab(QWidget):
         self.packs_list.clear()
         if not base or not os.path.isdir(base):
             return
+        
+        # Process events periodically to keep UI responsive
+        from PySide6.QtWidgets import QApplication
+        process_counter = 0
 
         def contains_images(d: str, depth=2) -> bool:
             exts = ('.png', '.jpg', '.jpeg', '.bmp', '.tga')
@@ -3614,7 +4076,11 @@ class TexturesTab(QWidget):
                 except Exception:
                     pass
                 it.setToolTip(0, tt)
-                it.setIcon(0, QIcon())
+                # Use the thumbnail if it was successfully created
+                if thumb and os.path.isfile(thumb):
+                    it.setIcon(0, QIcon(thumb))
+                else:
+                    it.setIcon(0, QIcon())
                 try:
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug(f"[TexturesTab] adding item: display='{display}' title_col='{title_col}' path='{pack_dir}'")
@@ -3721,7 +4187,11 @@ class TexturesTab(QWidget):
             except Exception:
                 pass
             it.setToolTip(0, tt)
-            it.setIcon(0, QIcon())
+            # Use the thumbnail if it was successfully created
+            if thumb and os.path.isfile(thumb):
+                it.setIcon(0, QIcon(thumb))
+            else:
+                it.setIcon(0, QIcon())
             try:
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(f"[TexturesTab] adding item: display='{display}' title_col='{title_col}' path='{pack_dir}'")
@@ -3774,6 +4244,11 @@ class TexturesTab(QWidget):
                 except Exception:
                     pass
                 self.packs_list.addTopLevelItem(it)
+        
+                # Process events every 5 items to keep UI responsive
+                process_counter += 1
+                if process_counter % 5 == 0:
+                    QApplication.processEvents()
         
                 continue
 
@@ -3850,12 +4325,22 @@ class TexturesTab(QWidget):
                     except Exception:
                         pass
                     it.setToolTip(0, tt)
-                    it.setIcon(0, QIcon())
+                    # Use the thumbnail if it was successfully created
+                    if thumb and os.path.isfile(thumb):
+                        it.setIcon(0, QIcon(thumb))
+                    else:
+                        it.setIcon(0, QIcon())
                     try:
                         logger.debug(f"[TexturesTab] adding serial child item: display='{display}' title_col='{title_col}' path='{target}'")
                     except Exception:
                         pass
                     self.packs_list.addTopLevelItem(it)
+                    
+                    # Process events to keep UI responsive
+                    process_counter += 1
+                    if process_counter % 5 == 0:
+                        QApplication.processEvents()
+                    
                     continue
             except Exception:
                 pass
@@ -3902,12 +4387,22 @@ class TexturesTab(QWidget):
                     except Exception:
                         pass
                     it.setToolTip(0, tt)
-                    it.setIcon(0, QIcon())
+                    # Use the thumbnail if it was successfully created
+                    if thumb and os.path.isfile(thumb):
+                        it.setIcon(0, QIcon(thumb))
+                    else:
+                        it.setIcon(0, QIcon())
                     try:
                         logger.debug(f"[TexturesTab] adding crc-child item: display='{display}' title_col='{title_col}' path='{pack_dir}'")
                     except Exception:
                         pass
                     self.packs_list.addTopLevelItem(it)
+                    
+                    # Process events to keep UI responsive
+                    process_counter += 1
+                    if process_counter % 5 == 0:
+                        QApplication.processEvents()
+                    
                 continue
 
             # If the folder (or a single nested child) contains images, treat it as a pack
@@ -3972,12 +4467,21 @@ class TexturesTab(QWidget):
                 except Exception:
                     pass
                 it.setToolTip(0, tt)
-                it.setIcon(0, QIcon())
+                # Use the thumbnail if it was successfully created
+                if thumb and os.path.isfile(thumb):
+                    it.setIcon(0, QIcon(thumb))
+                else:
+                    it.setIcon(0, QIcon())
                 try:
                     logger.debug(f"[TexturesTab] adding image-pack item: display='{item_text}' title_col='{title_col}' path='{target}'")
                 except Exception:
                     pass
                 self.packs_list.addTopLevelItem(it)
+                
+                # Process events to keep UI responsive
+                process_counter += 1
+                if process_counter % 5 == 0:
+                    QApplication.processEvents()
 
         # After full listing, print diagnostics and resolve titles for items missing Title column
         try:
@@ -4193,9 +4697,32 @@ class TexturesTab(QWidget):
     def _make_thumbnail(self, pack_dir: str, key: str) -> Optional[str]:
         """Create or reuse a thumbnail image path for a pack. Returns path to thumbnail file usable by QIcon."""
         try:
-            cache_file = os.path.join(self._thumb_cache, f"{key}.png")
-            if os.path.isfile(cache_file) and (os.path.getmtime(cache_file) > os.path.getmtime(pack_dir)):
-                return cache_file
+            # Sanitize the key to create a valid filename
+            # Remove or replace characters that are invalid in filenames
+            import re
+            # Replace invalid filename characters with underscore
+            safe_key = re.sub(r'[<>:"/\\|?*◆♦●○■□▲△▼▽◇◆★☆]', '_', key)
+            # Also replace em-dash and other special dashes with regular dash
+            safe_key = safe_key.replace('—', '-').replace('–', '-')
+            # Remove any remaining non-ASCII characters that might cause issues
+            safe_key = safe_key.encode('ascii', 'ignore').decode('ascii')
+            # Remove multiple consecutive underscores
+            safe_key = re.sub(r'_+', '_', safe_key)
+            # Remove leading/trailing underscores and spaces
+            safe_key = safe_key.strip('_ ')
+            
+            cache_file = os.path.join(self._thumb_cache, f"{safe_key}.png")
+            # Check if cached thumbnail exists - if so, use it (performance optimization)
+            # Only regenerate if cache is missing or very old (>30 days)
+            if os.path.isfile(cache_file):
+                try:
+                    cache_age = time.time() - os.path.getmtime(cache_file)
+                    if cache_age < (30 * 24 * 3600):  # Less than 30 days old
+                        return cache_file
+                except Exception:
+                    # If we can't check age, just use the cache
+                    return cache_file
+            
             # find first suitable image
             exts = ('.png', '.jpg', '.jpeg', '.bmp', '.tga')
             for root, _, files in os.walk(pack_dir):
@@ -4223,6 +4750,46 @@ class TexturesTab(QWidget):
                         except Exception:
                             continue
                 break
+            
+            # If no images found, create a placeholder thumbnail
+            try:
+                # Create a 64x64 placeholder with a folder icon or neutral color
+                placeholder = QPixmap(64, 64)
+                placeholder.fill(Qt.transparent)
+                
+                # Draw a simple folder/texture icon
+                painter = QPainter(placeholder)
+                try:
+                    painter.setRenderHint(QPainter.Antialiasing)
+                    
+                    # Draw a folder-like shape
+                    painter.setPen(QPen(QColor(150, 150, 150), 2))
+                    painter.setBrush(QColor(200, 200, 200, 180))
+                    painter.drawRoundedRect(8, 16, 48, 40, 4, 4)
+                    
+                    # Draw a tab
+                    painter.setBrush(QColor(180, 180, 180, 180))
+                    painter.drawRoundedRect(8, 12, 24, 8, 2, 2)
+                    
+                    # Draw texture pattern (small squares)
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QColor(120, 120, 120, 100))
+                    for i in range(3):
+                        for j in range(3):
+                            painter.drawRect(16 + i*12, 24 + j*12, 8, 8)
+                finally:
+                    # Always end the painter, even if drawing fails
+                    painter.end()
+                
+                # Save placeholder
+                placeholder.save(cache_file, 'PNG')
+                return cache_file
+            except Exception as e:
+                try:
+                    logger.debug(f"[TexturesTab] placeholder generation failed: {e}")
+                except Exception:
+                    pass
+            
             return None
         except Exception:
             return None
@@ -4613,6 +5180,7 @@ class BulkTab(QWidget):
     def __init__(self, parent: 'MainWindow'):
         super().__init__()
         self.parent = parent
+        self._shutting_down = False  # Flag to prevent new workers during shutdown
         self.paths: List[str] = []
         self.rows: List[Dict[str, str]] = []  # {"file","serials","crc","title","status"}
         self._build_ui()
@@ -4911,6 +5479,9 @@ class BulkTab(QWidget):
 
     # ---------- Scanning ----------
     def _scan_files(self):
+        # Don't start new scans if shutting down
+        if getattr(self, '_shutting_down', False):
+            return
         paths = [self.table.item(r, 0).text() for r in range(self.table.rowCount())]
         self.progress.setMaximum(max(1, len(paths)))
         self.progress.setValue(0)
@@ -5492,6 +6063,69 @@ class MainWindow(QMainWindow):
             msg.setStandardButtons(QMessageBox.Ok)
             msg.exec()
             settings.setValue('welcome_shown', True)
+
+    def closeEvent(self, event):
+        """Clean up all running threads before closing."""
+        try:
+            # Set shutdown flags to prevent new workers
+            if hasattr(self, 'cheats_tab'):
+                self.cheats_tab._shutting_down = True
+            if hasattr(self, 'textures_tab'):
+                self.textures_tab._shutting_down = True
+            if hasattr(self, 'bulk_tab'):
+                self.bulk_tab._shutting_down = True
+            
+            # Stop all workers in CheatsTab
+            if hasattr(self.cheats_tab, '_workers'):
+                for worker in list(self.cheats_tab._workers):
+                    try:
+                        if worker.isRunning():
+                            worker.quit()
+                            worker.wait(1000)  # Wait up to 1 second
+                        if worker.isRunning():
+                            worker.terminate()  # Force terminate if still running
+                    except Exception:
+                        pass
+
+            # Stop all workers in TexturesTab
+            if hasattr(self.textures_tab, '_workers'):
+                for worker in list(self.textures_tab._workers):
+                    try:
+                        if worker.isRunning():
+                            worker.quit()
+                            worker.wait(1000)  # Wait up to 1 second
+                        if worker.isRunning():
+                            worker.terminate()  # Force terminate if still running
+                    except Exception:
+                        pass
+
+            # Stop BulkTab worker (stored as self.worker)
+            if hasattr(self.bulk_tab, 'worker') and self.bulk_tab.worker:
+                try:
+                    if self.bulk_tab.worker.isRunning():
+                        self.bulk_tab.worker.quit()
+                        self.bulk_tab.worker.wait(1000)
+                    if self.bulk_tab.worker.isRunning():
+                        self.bulk_tab.worker.terminate()
+                except Exception:
+                    pass
+            
+            # Stop all workers in BulkTab (if it has _workers list)
+            if hasattr(self.bulk_tab, '_workers'):
+                for worker in list(self.bulk_tab._workers):
+                    try:
+                        if worker.isRunning():
+                            worker.quit()
+                            worker.wait(1000)  # Wait up to 1 second
+                        if worker.isRunning():
+                            worker.terminate()  # Force terminate if still running
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        event.accept()
+
 
 
 def main():

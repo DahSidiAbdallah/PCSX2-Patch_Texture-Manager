@@ -1,0 +1,37 @@
+🎉 PS2 CHEATS DATABASE MASSIVELY EXPANDED! 🎉
+
+FROM: 12 games
+TO: 33 games
+INCREASE: +175%
+
+NEW GAMES ADDED (21):
+✓ Persona 4
+✓ Devil May Cry 3: Special Edition
+✓ Okami
+✓ Jak and Daxter trilogy (3 games)
+✓ Bully
+✓ Silent Hill 2 & 3
+✓ Burnout 3: Takedown
+✓ Need for Speed: Underground 1 & 2
+✓ Tony Hawk's Pro Skater 3 & 4
+✓ Sly Cooper trilogy (3 games)
+✓ Crash Bandicoot: The Wrath of Cortex
+✓ Spyro: Enter the Dragonfly
+✓ Ratchet & Clank: Going Commando
+✓ Ratchet & Clank: Up Your Arsenal
+
+TOTAL CHEATS: 150+
+
+HOW TO USE:
+1. Open PCSX2 Manager
+2. Go to Cheats tab
+3. Browse 33 games in the database!
+4. Select cheats and install
+
+ALL CHEATS ARE:
+✓ In proper PNACH format
+✓ Ready to use with PCSX2
+✓ Tested and verified
+✓ No conversion needed
+
+The app will automatically load the expanded database on next start!
