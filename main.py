@@ -62,6 +62,8 @@ except Exception:
 # Online cheat database integration
 import cheat_online
 from cheat_online import fetch_and_cache_cheats
+import theme
+import icons
 from bs4 import BeautifulSoup
 
 # ---------------------------- Helpers / Model ----------------------------
@@ -1209,9 +1211,11 @@ class CheatsTab(QWidget):
         # Create a container widget for all content
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.setContentsMargins(theme.SPACING_LG, theme.SPACING_LG, theme.SPACING_LG, theme.SPACING_LG)
+        layout.setSpacing(theme.SPACING_MD)
         
         # Quick Start Guide (collapsible)
-        self.quick_start_group = QGroupBox("📖 Quick Start Guide")
+        self.quick_start_group = QGroupBox("Quick Start Guide")
         self.quick_start_group.setCheckable(True)
         self.quick_start_group.setChecked(True)  # Expand by default for beginners
         qs_layout = QVBoxLayout()
@@ -1229,7 +1233,7 @@ class CheatsTab(QWidget):
         layout.addWidget(self.quick_start_group)
         
         # Built-in Cheats Browser (NEW FEATURE)
-        self.browser_group = QGroupBox("🎮 Browse Built-in Cheats Database")
+        self.browser_group = QGroupBox("Browse Built-in Cheats Database")
         self.browser_group.setCheckable(True)
         self.browser_group.setChecked(True)  # Open by default
         browser_layout = QVBoxLayout()
@@ -1243,7 +1247,7 @@ class CheatsTab(QWidget):
         browser_layout.addWidget(browser_info)
         
         # Game selector with search and letter filter
-        search_label = QLabel("🔍 <b>Search Games:</b>")
+        search_label = QLabel("<b>Search Games:</b>")
         browser_layout.addWidget(search_label)
         
         # Search box
@@ -1297,7 +1301,7 @@ class CheatsTab(QWidget):
         
         # Serial/CRC info display
         self.region_info_label = QLabel("")
-        self.region_info_label.setStyleSheet("QLabel { color: #666; font-size: 11px; padding: 5px; }")
+        self.region_info_label.setObjectName(theme.OBJ_MUTED_LABEL)
         region_layout.addWidget(self.region_info_label)
         browser_layout.addWidget(region_row)
         
@@ -1317,17 +1321,17 @@ class CheatsTab(QWidget):
         browser_actions_layout = QHBoxLayout(browser_actions)
         browser_actions_layout.setContentsMargins(0, 5, 0, 5)
         
-        self.btn_select_all = QPushButton("✓ Select All")
+        self.btn_select_all = QPushButton("Select All")
         self.btn_select_all.clicked.connect(self._select_all_cheats)
         self.btn_select_all.setEnabled(False)
         
-        self.btn_deselect_all = QPushButton("✗ Deselect All")
+        self.btn_deselect_all = QPushButton("Deselect All")
         self.btn_deselect_all.clicked.connect(self._deselect_all_cheats)
         self.btn_deselect_all.setEnabled(False)
         
-        self.btn_install_selected = QPushButton("💾 Install Selected Cheats")
+        self.btn_install_selected = QPushButton("Install Selected Cheats")
         self.btn_install_selected.setMinimumHeight(40)
-        self.btn_install_selected.setStyleSheet("QPushButton { font-weight: bold; background-color: #4CAF50; color: white; }")
+        self.btn_install_selected.setObjectName(theme.OBJ_SUCCESS_BUTTON)
         self.btn_install_selected.clicked.connect(self._install_selected_cheats)
         self.btn_install_selected.setEnabled(False)
         
@@ -1341,7 +1345,7 @@ class CheatsTab(QWidget):
         layout.addWidget(self.browser_group)
         
         # Target directories panel (simplified, collapsible)
-        self.paths_group = QGroupBox("⚙️ PCSX2 Folders (Auto-detected)")
+        self.paths_group = QGroupBox("PCSX2 Folders (Auto-detected)")
         self.paths_group.setCheckable(True)
         self.paths_group.setChecked(False)
         fl = QFormLayout(self.paths_group)
@@ -1359,7 +1363,7 @@ class CheatsTab(QWidget):
         layout.addWidget(self.paths_group)
 
         # Main cheat builder panel (simplified)
-        build_group = QGroupBox("🎮 Add Cheats to Your Game")
+        build_group = QGroupBox("Add Cheats to Your Game")
         bl = QVBoxLayout(build_group)
         
         # Basic info section
@@ -1386,12 +1390,12 @@ class CheatsTab(QWidget):
         action_layout = QHBoxLayout(action_row)
         action_layout.setContentsMargins(0, 10, 0, 10)
         
-        self.btn_fetch_online = QPushButton("🌐 Fetch Online Cheats")
+        self.btn_fetch_online = QPushButton("Fetch Online Cheats")
         self.btn_fetch_online.setMinimumHeight(40)
         self.btn_fetch_online.setToolTip("Download cheats from online databases")
         self.btn_fetch_online.clicked.connect(self._fetch_online_cheats)
         
-        self.btn_open_pnach = QPushButton("📂 Open Cheat File")
+        self.btn_open_pnach = QPushButton("Open Cheat File")
         self.btn_open_pnach.setMinimumHeight(40)
         self.btn_open_pnach.setToolTip("Load an existing .pnach cheat file")
         self.btn_open_pnach.clicked.connect(self._open_pnach_file)
@@ -1419,16 +1423,15 @@ class CheatsTab(QWidget):
         action_layout2 = QHBoxLayout(action_row2)
         action_layout2.setContentsMargins(0, 5, 0, 5)
         
-        self.btn_make = QPushButton("👁️ Preview")
+        self.btn_make = QPushButton("Preview")
         self.btn_make.setMinimumHeight(35)
         self.btn_make.setToolTip("Preview how the cheat file will look")
         self.btn_make.clicked.connect(self._generate_preview)
-        
-        self.btn_save = QPushButton("💾 Save to PCSX2")
+
+        self.btn_save = QPushButton("Save to PCSX2")
         self.btn_save.setMinimumHeight(35)
         self.btn_save.setToolTip("Install the cheats to your PCSX2 folder")
         self.btn_save.clicked.connect(self._save_to_cheats)
-        self.btn_save.setStyleSheet("QPushButton { font-weight: bold; }")
         
         action_layout2.addWidget(self.btn_make)
         action_layout2.addWidget(self.btn_save)
@@ -1449,7 +1452,7 @@ class CheatsTab(QWidget):
         layout.addWidget(build_group)
         
         # Advanced options (collapsible)
-        self.advanced_group = QGroupBox("🔧 Advanced Options")
+        self.advanced_group = QGroupBox("Advanced Options")
         self.advanced_group.setCheckable(True)
         self.advanced_group.setChecked(False)
         adv_layout = QVBoxLayout(self.advanced_group)
@@ -1501,7 +1504,7 @@ class CheatsTab(QWidget):
         resolver_layout.addWidget(self.progress)
         
         self.source_label = QLabel("")
-        self.source_label.setStyleSheet("QLabel { color: #666; font-size: 10px; }")
+        self.source_label.setObjectName(theme.OBJ_MUTED_LABEL)
         resolver_layout.addWidget(self.source_label)
         
         resolver_subgroup.setLayout(resolver_layout)
@@ -1510,7 +1513,7 @@ class CheatsTab(QWidget):
         layout.addWidget(self.advanced_group)
 
         # Existing cheats list
-        list_group = QGroupBox("📋 Installed Cheats")
+        list_group = QGroupBox("Installed Cheats")
         v2 = QVBoxLayout(list_group)
         
         # Search/filter bar
@@ -1525,7 +1528,7 @@ class CheatsTab(QWidget):
         v2.addWidget(search_row)
         
         v2.addWidget(self.list)
-        self.btn_refresh = QPushButton("🔄 Refresh List")
+        self.btn_refresh = QPushButton("Refresh List")
         self.btn_refresh.clicked.connect(self.refresh_list)
         v2.addWidget(self.btn_refresh)
         layout.addWidget(list_group)
@@ -2718,6 +2721,8 @@ class TexturesTab(QWidget):
         # Create a container widget for all content
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.setContentsMargins(theme.SPACING_LG, theme.SPACING_LG, theme.SPACING_LG, theme.SPACING_LG)
+        layout.setSpacing(theme.SPACING_MD)
 
         group = QGroupBox("Texture Pack Import")
         fl = QFormLayout(group)
@@ -2786,7 +2791,7 @@ class TexturesTab(QWidget):
         self.preview_loading = QLabel("Loading...")
         self.preview_loading.setVisible(False)
         self.preview_loading.setAlignment(Qt.AlignCenter)
-        self.preview_loading.setStyleSheet('background: rgba(0,0,0,0.6); color: white;')
+        self.preview_loading.setObjectName(theme.OBJ_OVERLAY_LABEL)
         self.preview_title = QLabel("")
         self.preview_serial = QLabel("")
         self.preview_path = QLabel("")
@@ -4975,6 +4980,8 @@ class BulkTab(QWidget):
         # Create a container widget for all content
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.setContentsMargins(theme.SPACING_LG, theme.SPACING_LG, theme.SPACING_LG, theme.SPACING_LG)
+        layout.setSpacing(theme.SPACING_MD)
 
         # Controls row
         ctrl_row = QWidget()
@@ -5488,9 +5495,11 @@ class SettingsTab(QWidget):
         # Create a container widget for all content
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.setContentsMargins(theme.SPACING_LG, theme.SPACING_LG, theme.SPACING_LG, theme.SPACING_LG)
+        layout.setSpacing(theme.SPACING_MD)
         
         # Main settings
-        grp = QGroupBox("📁 PCSX2 Installation")
+        grp = QGroupBox("PCSX2 Installation")
         fl = QFormLayout(grp)
         self.user_dir = QLineEdit()
         self.user_dir.setToolTip("The main PCSX2 user data folder")
@@ -5518,15 +5527,15 @@ class SettingsTab(QWidget):
         layout.addWidget(subgrp)
 
         # Quick actions
-        quick_grp = QGroupBox("⚡ Quick Actions")
+        quick_grp = QGroupBox("Quick Actions")
         quick_layout = QVBoxLayout()
         
-        self.btn_enable_cheats = QPushButton("✓ Enable Cheats in PCSX2")
+        self.btn_enable_cheats = QPushButton("Enable Cheats in PCSX2")
         self.btn_enable_cheats.setMinimumHeight(35)
         self.btn_enable_cheats.setToolTip("Automatically enable cheats in PCSX2.ini")
         self.btn_enable_cheats.clicked.connect(self._toggle_cheats_ini)
         
-        self.btn_enable_textures = QPushButton("✓ Enable Texture Replacement")
+        self.btn_enable_textures = QPushButton("Enable Texture Replacement")
         self.btn_enable_textures.setMinimumHeight(35)
         self.btn_enable_textures.setToolTip("Automatically enable texture replacement in PCSX2.ini")
         self.btn_enable_textures.clicked.connect(self._toggle_textures_ini)
@@ -5537,7 +5546,7 @@ class SettingsTab(QWidget):
         layout.addWidget(quick_grp)
 
         # Advanced integrations (collapsible)
-        cfg = QGroupBox("🔧 Advanced Integrations")
+        cfg = QGroupBox("Advanced Integrations")
         cfg.setCheckable(True)
         cfg.setChecked(False)
         cfgl = QFormLayout(cfg)
@@ -5555,7 +5564,7 @@ class SettingsTab(QWidget):
         layout.addWidget(cfg)
 
         # Profiles (collapsible)
-        prof = QGroupBox("💾 Game Profiles")
+        prof = QGroupBox("Game Profiles")
         prof.setCheckable(True)
         prof.setChecked(False)
         prof.setToolTip("Save game configurations for quick access")
@@ -5784,129 +5793,9 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(QIcon("logo.png"))
         self.resize(1100, 750)
         
-        # Apply modern dark theme
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #2b2b2b;
-            }
-            QTabWidget::pane {
-                border: none;
-                background-color: #2b2b2b;
-            }
-            QTabBar::tab {
-                background-color: #3c3c3c;
-                color: #cccccc;
-                padding: 12px 20px;
-                margin-right: 2px;
-                border: none;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
-            }
-            QTabBar::tab:selected {
-                background-color: #2b2b2b;
-                color: #ffffff;
-            }
-            QTabBar::tab:hover {
-                background-color: #404040;
-            }
-            QWidget {
-                background-color: #2b2b2b;
-                color: #cccccc;
-            }
-            QLineEdit, QTextEdit, QComboBox {
-                background-color: #3c3c3c;
-                border: 1px solid #555555;
-                border-radius: 4px;
-                padding: 6px;
-                color: #ffffff;
-            }
-            QLineEdit:focus, QTextEdit:focus {
-                border: 1px solid #0078d4;
-            }
-            QPushButton {
-                background-color: #0078d4;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 8px 16px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #1084e0;
-            }
-            QPushButton:pressed {
-                background-color: #006cc1;
-            }
-            QPushButton:disabled {
-                background-color: #555555;
-                color: #888888;
-            }
-            QGroupBox {
-                border: 1px solid #555555;
-                border-radius: 6px;
-                margin-top: 12px;
-                padding-top: 12px;
-                font-weight: bold;
-                color: #ffffff;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }
-            QLabel {
-                color: #cccccc;
-            }
-            QListWidget, QTreeWidget, QTableWidget {
-                background-color: #3c3c3c;
-                border: 1px solid #555555;
-                border-radius: 4px;
-                color: #ffffff;
-            }
-            QListWidget::item:selected, QTreeWidget::item:selected, QTableWidget::item:selected {
-                background-color: #0078d4;
-            }
-            QListWidget::item:hover, QTreeWidget::item:hover {
-                background-color: #404040;
-            }
-            QProgressBar {
-                border: 1px solid #555555;
-                border-radius: 4px;
-                text-align: center;
-                background-color: #3c3c3c;
-            }
-            QProgressBar::chunk {
-                background-color: #0078d4;
-                border-radius: 3px;
-            }
-            QScrollBar:vertical {
-                background-color: #2b2b2b;
-                width: 12px;
-            }
-            QScrollBar::handle:vertical {
-                background-color: #555555;
-                border-radius: 6px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background-color: #666666;
-            }
-            QCheckBox {
-                spacing: 8px;
-                color: #cccccc;
-            }
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border: 1px solid #555555;
-                border-radius: 3px;
-                background-color: #3c3c3c;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #0078d4;
-                border-color: #0078d4;
-            }
-        """)
-        
+        # Apply the shared dark theme (see theme.py for tokens/QSS)
+        self.setStyleSheet(theme.DARK_QSS)
+
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
@@ -5915,10 +5804,10 @@ class MainWindow(QMainWindow):
         self.textures_tab = TexturesTab(self)
         self.settings_tab = SettingsTab(self)
 
-        self.tabs.addTab(self.cheats_tab, "🎮 Cheats")
-        self.tabs.addTab(self.textures_tab, "🖼️ Textures")
-        self.tabs.addTab(self.bulk_tab, "📊 Bulk Scanner")
-        self.tabs.addTab(self.settings_tab, "⚙️ Settings")
+        self.tabs.addTab(self.cheats_tab, icons.tab_icon("cheats"), "Cheats")
+        self.tabs.addTab(self.textures_tab, icons.tab_icon("textures"), "Textures")
+        self.tabs.addTab(self.bulk_tab, icons.tab_icon("scan"), "Bulk Scanner")
+        self.tabs.addTab(self.settings_tab, icons.tab_icon("settings"), "Settings")
 
         # Mirror initial resolver options into Bulk tab for convenience
         self.bulk_tab.chk_offline_lists.setChecked(self.cheats_tab.chk_offline_lists.isChecked())
@@ -5986,7 +5875,7 @@ class MainWindow(QMainWindow):
             msg.setWindowTitle("Welcome to PCSX2 Manager!")
             msg.setTextFormat(Qt.RichText)
             msg.setText(
-                "<h2>Welcome! 👋</h2>"
+                "<h2>Welcome!</h2>"
                 "<p>This tool helps you easily add cheats and texture packs to PCSX2.</p>"
                 "<br>"
                 "<p><b>Quick Start:</b></p>"

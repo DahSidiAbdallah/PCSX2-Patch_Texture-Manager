@@ -121,3 +121,9 @@ def test_dialog_shows_and_updates(tmp_path):
         shutil.rmtree(imports_root)
     except Exception:
         pass
+
+    # Close the window so its timers/threads don't linger and interfere with
+    # later tests sharing this process's QApplication event loop.
+    win.close()
+    win.deleteLater()
+    QTest.qWait(50)
