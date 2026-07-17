@@ -14,7 +14,7 @@ This project provides a Qt-based desktop application (PySide6) for working with 
 
 - RAW ↔ PNACH conversion and previewing
 - Auto-detection and resolution of Serial/CRC values (local mapping + optional online PSXDataCenter lookup)
-- Fetching and importing online cheats (GameHacking.org, forums, optional Playwright rendering)
+- Fetching and importing online cheats (GameHacking.org, PSXDataCenter)
 - Drag & drop support for `.pnach`, `.zip` and folders
 - Texture pack import/installation with automatic CRC suggestions
 - Simple INI toggles and test launch for PCSX2
@@ -24,7 +24,7 @@ This project provides a Qt-based desktop application (PySide6) for working with 
 
 - GUI application entrypoint: `main.py` (Qt/PySide6)
 - Title resolver using local bundled PSXDataCenter HTML files (`ulist2.html`, `plist2.html`, `jlist2.html`) and optional online lookup
-- Online cheat fetching via `cheat_online.py`; Playwright-based renderer available in `playwright_fetch.py` (optional)
+- Online cheat fetching via `cheat_online.py` (GameHacking.org, PSXDataCenter)
 - Helpers for parsing and building PNACH files: `parse_pnach_text`, `parse_raw_8x8`, `build_pnach`
 - Thumbnail/cover fetching for installed packs (caches under the user's home directory)
 
@@ -34,7 +34,6 @@ This project provides a Qt-based desktop application (PySide6) for working with 
 - PySide6
 - beautifulsoup4
 - requests (optional but recommended for online features)
-- playwright (optional; only required when using the Playwright renderer; follow Playwright docs to install browsers)
 
 To make installation easier a minimal `requirements.txt` is included.
 
@@ -51,13 +50,6 @@ python -m venv .venv
 
 ```powershell
 pip install -r requirements.txt
-```
-
-3. (Optional) If you plan to use Playwright-based fetching, install browsers:
-
-```powershell
-pip install playwright
-python -m playwright install
 ```
 
 ## Running the GUI
@@ -83,7 +75,7 @@ pytest -q
 ## Notes & Troubleshooting
 
 - If the GUI fails to start, ensure `PySide6` is installed and compatible with your Python version.
-- Online features gracefully degrade: if `requests` or `playwright` are missing, the app still runs for local/offline work.
+- Online features gracefully degrade: if `requests` is missing, the app still runs for local/offline work.
 - The app tries to auto-detect common PCSX2 user directories. You can set the base path manually in Settings.
 
 ## Contributing

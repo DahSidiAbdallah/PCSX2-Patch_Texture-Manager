@@ -36,6 +36,214 @@ def fetch_pcsx2_forum_cheats(serial_or_crc):
     return []
 
 
+# --- Shared PSXDataCenter title/CRC resolution ---
+# Duplicated (not imported) from main.py's SERIAL_RE/CRC_IN_TEXT/normalize_crc so this
+# module stays importable standalone without a circular import back into main.py.
+_CRC_IN_TEXT = re.compile(r"\bCRC\s*[:=]\s*(?:0x)?([0-9A-Fa-f]{8})\b")
+_HEX8 = re.compile(r"^[0-9A-Fa-f]{8}$")
+
+PSXDATACENTER_URLS = [
+    'https://psxdatacenter.com/ps2/ntscu2.html',
+    'https://psxdatacenter.com/ps2/pal2.html',
+    'https://psxdatacenter.com/ps2/ntscj2.html',
+]
+
+
+def _normalize_crc(crc):
+    if not crc:
+        return None
+    crc = crc.strip().upper()
+    return crc if _HEX8.match(crc) else None
+
+
+def _score_title_candidate(text, html=None):
+    """Heuristic score for a title candidate; higher is better. See resolve_title_and_crc."""
+    if not text:
+        return -9999
+    t = re.sub(r'^[\s \._:\-\|]+', '', text).strip()
+    tu = t.upper()
+    if tu in ('INFO', 'TITLE', 'N/A', 'UNKNOWN'):
+        return -9999
+    score = max(0, len(t))
+    if not re.search(r'[A-Za-z]', t):
+        score -= 120
+    else:
+        score += 40
+    words = [w for w in re.split(r'\s+', t) if w]
+    if len(words) > 1:
+        score += 14 * min(6, len(words))
+    if re.search(r'[a-z]', t):
+        score += 24
+    if re.search(r'[\(\)\-:–—\.]', t):
+        score += 10
+    if t.isupper():
+        short_tokens = [w for w in words if len(w) < 5]
+        if len(words) == 1 and len(t) < 6:
+            score -= 60
+        elif len(short_tokens) >= len(words) and len(words) <= 3:
+            score -= 36
+    if re.fullmatch(r'[0-9A-Fa-f]{1,8}', t):
+        score -= 100
+    alpha = len(re.findall(r'[A-Za-z]', t))
+    if alpha > 0:
+        score += int((alpha / max(1, len(t))) * 40)
+    if html:
+        hu = html.lower()
+        if 'class="col3"' in hu or "class='col3'" in hu or 'class="col7"' in hu or "class='col7'" in hu:
+            score += 60
+        if '<a' in hu:
+            try:
+                soup = BeautifulSoup(html, 'html.parser')
+                a = soup.find('a')
+                if a:
+                    at = (a.get_text(' ', strip=True) or '').strip()
+                    if at and at.upper() not in ('INFO', '詳細', 'DETAILS') and re.search(r'[A-Za-z]', at):
+                        score += 36
+                    else:
+                        score -= 18
+            except Exception:
+                score += 8
+    return score
+
+
+def resolve_title_and_crc(html: str, serial_variants):
+    """Scan a PSXDataCenter-style HTML page for a title/CRC matching any of serial_variants.
+
+    Returns (title, crc, html_snippet); any element may be None if not found. This is the
+    single, shared implementation of the title-scraping heuristics that used to be
+    duplicated (and drifting) between this module and main.py's ResolveWorker/SingleOnlineLookup.
+    """
+    if not BeautifulSoup or not html:
+        return None, None, None
+    found_title = None
+    found_crc = None
+    found_html = None
+    found_title_html = None
+    U = html.upper()
+    for sv in serial_variants:
+        pos = U.find(sv.upper())
+        if pos == -1:
+            pos = U.find(sv.upper().replace('-', '').replace('_', ''))
+        if pos == -1:
+            continue
+        window = html[max(0, pos - 4000): pos + 4000]
+        mcrc = _CRC_IN_TEXT.search(window)
+        if mcrc and not found_crc:
+            found_crc = _normalize_crc(mcrc.group(1))
+        m = re.search(
+            r'<td[^>]*class=["\']col2["\'][^>]*>.*?(%s).*?</td>\s*<td[^>]*class=["\']col3["\'][^>]*>(.*?)</td>' % re.escape(sv),
+            window, flags=re.IGNORECASE | re.DOTALL)
+        if m and not found_title:
+            cand_html = m.group(2)
+            cand = BeautifulSoup(cand_html, 'html.parser').get_text(strip=True)
+            if cand and len(cand) > 3 and cand.upper() not in ('INFO', 'TITLE', 'N/A', 'UNKNOWN') and re.search(r'[A-Za-z]', cand):
+                found_title = cand
+                found_html = m.group(0)
+                found_title_html = cand_html
+        if not found_title:
+            m2 = re.search(
+                r'<td[^>]*class=["\']col6["\'][^>]*>.*?(%s).*?</td>\s*<td[^>]*class=["\']col7["\'][^>]*>(.*?)</td>' % re.escape(sv),
+                window, flags=re.IGNORECASE | re.DOTALL)
+            if m2:
+                cand_html = m2.group(2)
+                cand = BeautifulSoup(cand_html, 'html.parser').get_text(strip=True)
+                if cand and len(cand) > 3 and cand.upper() not in ('INFO', 'TITLE', 'N/A', 'UNKNOWN') and re.search(r'[A-Za-z]', cand):
+                    found_title = cand
+                    found_html = m2.group(0)
+                    found_title_html = cand_html
+        if not found_title:
+            soup = BeautifulSoup(window, 'html.parser')
+            sv_u = sv.upper()
+            picked = None
+            picked_html = None
+            for tr in soup.find_all('tr'):
+                tr_txt = tr.get_text(' ', strip=True).upper()
+                if sv_u in tr_txt or sv_u.replace('-', '') in tr_txt:
+                    td3 = tr.find('td', attrs={'class': re.compile(r'col3', re.I)})
+                    if td3:
+                        cand_html = str(td3)
+                        cand = td3.get_text(' ', strip=True)
+                        if cand and len(cand) > 3 and cand.upper() not in ('INFO', 'TITLE', 'N/A', 'UNKNOWN') and re.search(r'[A-Za-z]', cand):
+                            picked = cand
+                            picked_html = cand_html
+                            break
+                    a = tr.find('a')
+                    if a and a.get_text(strip=True):
+                        cand_html = str(a)
+                        cand = a.get_text(' ', strip=True)
+                        if len(cand) > 3 and cand.upper() not in ('INFO', 'TITLE', 'N/A', 'UNKNOWN') and re.search(r'[A-Za-z]', cand):
+                            picked = cand
+                            picked_html = cand_html
+                            break
+                    tds = tr.find_all('td')
+                    if len(tds) >= 2:
+                        cands = [td.get_text(' ', strip=True) for td in tds]
+                        cands = [c for c in cands if c and sv_u not in c.upper()]
+                        if cands:
+                            html_candidates = []
+                            for td in tds:
+                                ctxt = td.get_text(' ', strip=True)
+                                if ctxt and sv_u not in ctxt.upper():
+                                    html_candidates.append((ctxt, str(td)))
+                            if html_candidates:
+                                scored = [(_score_title_candidate(text, html_), text, html_) for (text, html_) in html_candidates]
+                            else:
+                                scored = [(_score_title_candidate(c), c, None) for c in cands]
+                            scored.sort(reverse=True)
+                            cand = scored[0][1]
+                            if cand and len(cand) > 3 and cand.upper() not in ('INFO', 'TITLE', 'N/A', 'UNKNOWN'):
+                                picked = cand
+                                picked_html = str(tr)
+                                break
+            if not picked:
+                text = soup.get_text(' ', strip=True)
+                after = text.upper().split(sv.upper(), 1)[-1] if sv.upper() in text.upper() else text.upper()
+                chunks = re.split(r'[\|\-\n\r]+', after)
+                for ch in chunks:
+                    c = ch.strip()
+                    if not c:
+                        continue
+                    if re.search(r"\b(SCUS|SLUS|SLES|SCES|SLPS|SLPM|SCPS|SCAJ|SLKA|ULUS|UCUS|PBPX|PAPX|TCUS|TCES)[-_ ]?\d{3,6}\b", c, re.IGNORECASE) or _CRC_IN_TEXT.search(c):
+                        continue
+                    if len(c) > 3 and c.upper() not in ('INFO', 'TITLE', 'N/A', 'UNKNOWN') and re.search(r'[A-Za-z]', c):
+                        picked = c
+                        picked_html = None
+                        break
+            if picked:
+                found_title = picked
+                if picked_html:
+                    found_html = picked_html
+                    found_title_html = picked_html
+        if found_title and found_crc:
+            break
+    return found_title, found_crc, (found_title_html or found_html)
+
+
+def resolve_serial_online(serial_variants, urls=None, timeout=8):
+    """Fetch PSXDataCenter pages and resolve a title/CRC for the given serial variants.
+
+    Returns (title, crc, html_snippet); any element may be None if nothing was found or
+    `requests` isn't available.
+    """
+    if not requests:
+        return None, None, None
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; PCSX2-Manager/1.0)"}
+    found_title = found_crc = found_html = None
+    for url in (urls or PSXDATACENTER_URLS):
+        resp = _safe_get(url, timeout=timeout, headers=headers)
+        if not resp or resp.status_code != 200 or not resp.text:
+            continue
+        title, crc, html_snip = resolve_title_and_crc(resp.text, serial_variants)
+        if title and not found_title:
+            found_title = title
+            found_html = html_snip
+        if crc and not found_crc:
+            found_crc = crc
+        if found_title and found_crc:
+            break
+    return found_title, found_crc, found_html
+
+
 def _extract_table_snippets(html: str, key: str):
     """Return small HTML snippets around matches of key (case-insensitive)."""
     if not BeautifulSoup:
@@ -57,38 +265,23 @@ def _extract_table_snippets(html: str, key: str):
 
 def fetch_psxdatacenter_cheats(serial_or_crc):
     """Return structured entries from PSXDataCenter pages if the serial/crc appears.
-    We attempt to extract a nearby HTML snippet and a plausible title.
+    Title resolution uses the same heuristics as resolve_title_and_crc (shared with
+    main.py's ResolveWorker/SingleOnlineLookup) rather than a separate, weaker guess.
     """
     if not requests or not BeautifulSoup:
         return []
-    urls = [
-        'https://psxdatacenter.com/ps2/ntscu2.html',
-        'https://psxdatacenter.com/ps2/pal2.html',
-        'https://psxdatacenter.com/ps2/ntscj2.html',
-    ]
     out = []
     headers = {"User-Agent": "PCSX2-Manager/1.0 (+https://example)"}
-    for url in urls:
+    serial_variants = [serial_or_crc, serial_or_crc.upper().replace('-', '').replace('_', '')]
+    for url in PSXDATACENTER_URLS:
         resp = _safe_get(url, headers=headers)
         if not resp or resp.status_code != 200 or not resp.text:
             continue
         html = resp.text
         if serial_or_crc.upper() not in html.upper():
             continue
-        snippets = _extract_table_snippets(html, serial_or_crc)
-        for sn in snippets:
-            title = None
-            try:
-                soup = BeautifulSoup(sn, 'html.parser')
-                # Heuristic: find the nearest <td> with class col3/col7 or any <td> text not matching serial/CRC
-                td = soup.find('td')
-                if td:
-                    cand = td.get_text(' ', strip=True)
-                    if cand and not re.search(r"\b(?:%s)\b" % re.escape(serial_or_crc), cand, re.I):
-                        title = cand
-            except Exception:
-                title = None
-            out.append({'source': 'psxdatacenter', 'title': title, 'codes': [], 'raw_html': sn, 'link': url})
+        title, _crc, html_snip = resolve_title_and_crc(html, serial_variants)
+        out.append({'source': 'psxdatacenter', 'title': title, 'codes': [], 'raw_html': html_snip, 'link': url})
     return out
 
 

@@ -4,7 +4,7 @@ This short guide explains where to start, how to run the app/tests locally, and 
 
 Quick start
 - Main GUI entrypoint: `main.py` — run with `python main.py` from the repository root.
-- Library / helper modules: most logic lives in `main.py` (parsing, build_pnach, workers) and small helpers such as `cheat_online.py`, `playwright_fetch.py`.
+- Library / helper modules: most logic lives in `main.py` (parsing, build_pnach, workers) and small helpers such as `cheat_online.py`, `textures_install.py`.
 
 Running locally (recommended)
 1. Create a venv and activate it:

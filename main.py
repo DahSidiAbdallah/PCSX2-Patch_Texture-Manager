@@ -22,7 +22,7 @@ from collections import deque
 import time
 import logging
 
-from PySide6.QtCore import Qt, QThread, Signal, QSize, QSettings, QTimer
+from PySide6.QtCore import Qt, QThread, Signal, QSize, QSettings, QTimer, QCoreApplication
 import sys
 from PySide6.QtGui import QIcon, QPixmap, QDragEnterEvent, QDropEvent, QAction, QPainter, QColor, QPen
 import concurrent.futures
@@ -60,6 +60,7 @@ except Exception:
 
 
 # Online cheat database integration
+import cheat_online
 from cheat_online import fetch_and_cache_cheats
 from bs4 import BeautifulSoup
 
@@ -138,6 +139,27 @@ class PnachData:
             self.comments = []
         if self.items is None:
             self.items = []
+
+
+@dataclass
+class GameEntry:
+    """A single detected/selected game, shared across tabs via MainWindow.current_game_changed."""
+    serial: str = ""
+    title: str = ""
+    crc: Optional[str] = None
+    source_path: Optional[str] = None
+
+
+@dataclass
+class AppState:
+    """Shared state published by MainWindow so tabs don't have to reach into each
+    other directly for the current PCSX2 paths / selected game."""
+    pcsx2_paths: Dict[str, str] = None
+    current_game: Optional[GameEntry] = None
+
+    def __post_init__(self):
+        if self.pcsx2_paths is None:
+            self.pcsx2_paths = {}
 
 
 # Guess common PCSX2 user dir locations
@@ -899,7 +921,6 @@ class ResolveWorker(QThread):
             k_norm = norm_serial(k)
             title = self.local_map.get(k) or self.local_map.get(k_norm)
             crc = None
-            found_html = None
             found_title_html = None
             # Try local HTML bundles
             if not title and self.use_bundled_lists and k:
@@ -909,135 +930,15 @@ class ResolveWorker(QThread):
 
             # Online lookup if requested and something missing
             if self.try_online and k and (not title or not crc):
-                HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; PCSX2-Manager/1.0)"}
-                serial_variants = [k, k_norm]
-                url_templates = [
-                    'https://psxdatacenter.com/ps2/ntscu2.html',
-                    'https://psxdatacenter.com/ps2/pal2.html',
-                    'https://psxdatacenter.com/ps2/ntscj2.html',
-                ]
-                found_title = None
-                found_crc = None
-
-                def scan_page(html: str):
-                    nonlocal found_title, found_crc, found_html, found_title_html
-                    U = html.upper()
-                    for sv in serial_variants:
-                        pos = U.find(sv.upper())
-                        if pos == -1:
-                            pos = U.find(sv.upper().replace('-', '').replace('_', ''))
-                        if pos != -1:
-                            window = html[max(0, pos-4000): pos+4000]
-                            mcrc = CRC_IN_TEXT.search(window)
-                            if mcrc and not found_crc:
-                                found_crc = normalize_crc(mcrc.group(1))
-                            m = re.search(r'<td[^>]*class=["\']col2["\'][^>]*>.*?(%s).*?</td>\s*<td[^>]*class=["\']col3["\'][^>]*>(.*?)</td>' % re.escape(sv), window, flags=re.IGNORECASE | re.DOTALL)
-                            if m and not found_title:
-                                cand_html = m.group(2)
-                                cand = BeautifulSoup(cand_html, 'html.parser').get_text(strip=True)
-                                if cand and len(cand) > 3 and cand.upper() not in ('INFO','TITLE','N/A','UNKNOWN') and re.search(r'[A-Za-z]', cand):
-                                    found_title = cand
-                                    found_html = m.group(0)
-                                    found_title_html = cand_html
-                            if not found_title:
-                                m2 = re.search(r'<td[^>]*class=["\']col6["\'][^>]*>.*?(%s).*?</td>\s*<td[^>]*class=["\']col7["\'][^>]*>(.*?)</td>' % re.escape(sv), window, flags=re.IGNORECASE | re.DOTALL)
-                                if m2:
-                                    cand_html = m2.group(2)
-                                    cand = BeautifulSoup(cand_html, 'html.parser').get_text(strip=True)
-                                    if cand and len(cand) > 3 and cand.upper() not in ('INFO','TITLE','N/A','UNKNOWN') and re.search(r'[A-Za-z]', cand):
-                                        found_title = cand
-                                        found_html = m2.group(0)
-                                        found_title_html = cand_html
-                            if not found_title:
-                                # Try table-row based extraction: find the <tr> that contains the serial and pick nearby cells/links
-                                soup = BeautifulSoup(window, 'html.parser')
-                                sv_u = sv.upper()
-                                picked = None
-                                picked_html = None
-                                candidates = []
-                                for tr in soup.find_all('tr'):
-                                    tr_txt = tr.get_text(' ', strip=True).upper()
-                                    if sv_u in tr_txt or sv_u.replace('-', '') in tr_txt:
-                                        # prefer col with title-like text: look for <td class=col3> or any <a> text
-                                        td3 = tr.find('td', attrs={'class': re.compile(r'col3', re.I)})
-                                        if td3:
-                                            cand_html = str(td3)
-                                            cand = td3.get_text(' ', strip=True)
-                                            if cand and len(cand) > 3 and cand.upper() not in ('INFO','TITLE','N/A','UNKNOWN') and re.search(r'[A-Za-z]', cand):
-                                                picked = cand
-                                                picked_html = cand_html
-                                                break
-                                        # try any link text in this row
-                                        a = tr.find('a')
-                                        if a and a.get_text(strip=True):
-                                            cand_html = str(a)
-                                            cand = a.get_text(' ', strip=True)
-                                            if len(cand) > 3 and cand.upper() not in ('INFO','TITLE','N/A','UNKNOWN') and re.search(r'[A-Za-z]', cand):
-                                                picked = cand
-                                                picked_html = cand_html
-                                                break
-                                        # fallback: look at neighboring <td> siblings
-                                        tds = tr.find_all('td')
-                                        if len(tds) >= 2:
-                                            # choose the best td text that's not the serial using scoring
-                                            cands = [td.get_text(' ', strip=True) for td in tds]
-                                            cands = [c for c in cands if c and sv_u not in c.upper()]
-                                            if cands:
-                                                # cands are td texts; find the original td HTML to give context
-                                                td_elements = tr.find_all('td')
-                                                html_candidates = []
-                                                for td in td_elements:
-                                                    ctxt = td.get_text(' ', strip=True)
-                                                    if ctxt and sv_u not in ctxt.upper():
-                                                        html_candidates.append((ctxt, str(td)))
-                                                if html_candidates:
-                                                    scored = [(_score_title_candidate(text, html), text, html) for (text, html) in html_candidates]
-                                                else:
-                                                    scored = [(_score_title_candidate(c), c, None) for c in cands]
-                                                scored.sort(reverse=True)
-                                                cand = scored[0][1]
-                                                if cand and len(cand) > 3 and cand.upper() not in ('INFO','TITLE','N/A','UNKNOWN'):
-                                                    picked = cand
-                                                    picked_html = str(tr)
-                                                    break
-                                if not picked:
-                                    # fallback to searching for nearby plain text tokens after the serial
-                                    text = soup.get_text(' ', strip=True)
-                                    after = text.upper().split(sv.upper(), 1)[-1] if sv.upper() in text.upper() else text.upper()
-                                    chunks = re.split(r'[\|\-\n\r]+', after)
-                                    for ch in chunks:
-                                        c = ch.strip()
-                                        if not c: continue
-                                        if SERIAL_RE.search(c) or CRC_IN_TEXT.search(c):
-                                            continue
-                                        if len(c) > 3 and c.upper() not in ('INFO','TITLE','N/A','UNKNOWN') and re.search(r'[A-Za-z]', c):
-                                            picked = c
-                                            picked_html = None
-                                            break
-                                if picked:
-                                    found_title = picked
-                                    if picked_html:
-                                        found_html = picked_html
-                                        found_title_html = picked_html
-
-                if self.try_online and requests is not None:
-                    for url in url_templates:
-                        try:
-                            resp = requests.get(url, headers=HEADERS, timeout=8)
-                            if resp.status_code == 200 and resp.text:
-                                scan_page(resp.text)
-                                if found_title and (found_crc or crc):
-                                    break
-                        except Exception:
-                            continue
-
+                found_title, found_crc, found_html = cheat_online.resolve_serial_online([k, k_norm])
                 if found_title and not title:
                     title = found_title
+                    found_title_html = found_html
                 if found_crc and not crc:
                     crc = found_crc
 
             # include optional matched html if present
-            return (k, title, crc, found_title_html or found_html)
+            return (k, title, crc, found_title_html)
 
         max_workers = min(6, (os.cpu_count() or 4))
         completed = 0
@@ -1080,98 +981,22 @@ class SingleOnlineLookup(QThread):
         self.serial = serial
 
     def run(self):
-        try:
-            logger.debug(f"[SingleOnlineLookup] starting lookup for {self.serial}")
-        except Exception:
-            pass
         if requests is None:
-            try:
-                logger.debug("[SingleOnlineLookup] requests missing, aborting")
-            except Exception:
-                pass
             self.failed.emit()
             return
         serial = (self.serial or '').strip()
         if not serial:
             self.failed.emit()
             return
-        HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; PCSX2-Manager/1.0)"}
-        serial_variants = [serial, norm_serial_key(serial)]
-        url_templates = [
-            'https://psxdatacenter.com/ps2/ntscu2.html',
-            'https://psxdatacenter.com/ps2/pal2.html',
-            'https://psxdatacenter.com/ps2/ntscj2.html',
-        ]
         try:
-            for url in url_templates:
-                try:
-                    logger.debug(f"[SingleOnlineLookup] fetching {url} for {self.serial}")
-                except Exception:
-                    pass
-                try:
-                    resp = requests.get(url, headers=HEADERS, timeout=10)
-                except Exception as e:
-                    try:
-                        logger.debug(f"[SingleOnlineLookup] request failed: {e}")
-                    except Exception:
-                        pass
-                    continue
-                if resp.status_code != 200 or not resp.text:
-                    try:
-                        logger.debug(f"[SingleOnlineLookup] bad status {resp.status_code} for {url}")
-                    except Exception:
-                        pass
-                    continue
-                html = resp.text
-                U = html.upper()
-                for sv in serial_variants:
-                    sv_u = sv.upper()
-                    pos = U.find(sv_u)
-                    if pos == -1:
-                        pos = U.find(sv_u.replace('-', '').replace('_', ''))
-                    if pos == -1:
-                        continue
-                    try:
-                        logger.debug(f"[SingleOnlineLookup] serial {self.serial} found in page {url} at pos {pos}")
-                    except Exception:
-                        pass
-                    window = html[max(0, pos-3000): pos+3000]
-                    # Try to find a title cell via regex for table columns used on PSXDataCenter
-                    m = re.search(r'<td[^>]*class=["\']col3["\'][^>]*>(.*?)</td>', window, flags=re.IGNORECASE | re.DOTALL)
-                    if m:
-                        cand = BeautifulSoup(m.group(1), 'html.parser').get_text(strip=True)
-                        if cand and len(cand) > 3 and cand.upper() not in ('INFO', 'TITLE'):
-                            try:
-                                logger.debug(f"[SingleOnlineLookup] candidate title (td col3): {cand}")
-                            except Exception:
-                                pass
-                            self.found.emit(cand)
-                            return
-                    # fallback: extract nearby plain text after serial
-                    soup = BeautifulSoup(window, 'html.parser')
-                    text = soup.get_text(' ', strip=True)
-                    after = text.upper().split(sv_u, 1)[-1] if sv_u in text.upper() else text.upper()
-                    # find candidate chunks (split by ' - ' or punctuation)
-                    chunks = re.split(r'[\|\-\n\r]+', after)
-                    for ch in chunks:
-                        c = ch.strip()
-                        if not c: continue
-                        # skip tokens that look like serials or headers
-                        if SERIAL_RE.search(c) or CRC_IN_TEXT.search(c):
-                            continue
-                        if len(c) > 3 and c.upper() not in ('INFO', 'TITLE', 'N/A', 'UNKNOWN'):
-                            # pick the first reasonably long chunk
-                            title = BeautifulSoup(c, 'html.parser').get_text(strip=True)
-                            if title:
-                                try:
-                                    logger.debug(f"[SingleOnlineLookup] fallback candidate: {title}")
-                                except Exception:
-                                    pass
-                                self.found.emit(title)
-                                return
-            # nothing found
-            self.failed.emit()
+            title, _crc, _html = cheat_online.resolve_serial_online([serial, norm_serial_key(serial)])
         except Exception:
+            logger.debug(f"[SingleOnlineLookup] lookup failed for {self.serial}", exc_info=True)
+            self.failed.emit()
+            return
+        if title:
+            self.found.emit(title)
+        else:
             self.failed.emit()
 
 
@@ -1181,6 +1006,7 @@ class CheatsTab(QWidget):
     def __init__(self, parent: 'MainWindow'):
         super().__init__()
         self.parent = parent
+        self.parent.paths_changed.connect(self.load_paths)
         self._shutting_down = False  # Flag to prevent new workers during shutdown
         self.mapping: Dict[str, str] = {}  # CRC/Serial -> Title
         # persistent mapping store path (auto-load/save)
@@ -1752,35 +1578,12 @@ class CheatsTab(QWidget):
         if not keys:
             QMessageBox.information(self, "No Serial/CRC", "No serials or CRCs detected to fetch. Enter a Serial/CRC or paste content containing them.")
             return
-        # Try each key, prefer lightweight fetch_and_cache_cheats then fallback to Playwright rendering
         all_results = []
         for key in keys:
             try:
                 results = fetch_and_cache_cheats(key)
             except Exception as e:
                 results = [{'source': 'error', 'error': str(e)}]
-            # If no results, try the Playwright renderer (if available)
-            if not results:
-                try:
-                    # dynamic import to avoid requiring Playwright at startup
-                    import importlib, os
-                    pw_mod_path = os.path.join(os.path.dirname(__file__), 'playwright_fetch.py')
-                    if os.path.isfile(pw_mod_path):
-                        # run the helper script in a subprocess to fetch and write cache for this key
-                        # We'll call the existing script `playwright_fetch.py` which writes to cheat_cache/<serial>.json
-                        import subprocess, sys
-                        subprocess.run([sys.executable, pw_mod_path], check=False)
-                        # read the cache file if present
-                        import json
-                        cache_path = os.path.join(os.path.dirname(__file__), 'cheat_cache', f"{key}.json")
-                        if os.path.isfile(cache_path):
-                            try:
-                                with open(cache_path, 'r', encoding='utf-8') as f:
-                                    results = json.load(f)
-                            except Exception:
-                                results = []
-                except Exception:
-                    pass
             if results:
                 all_results.append((key, results))
         if not all_results:
@@ -2782,6 +2585,7 @@ class TexturesTab(QWidget):
     def __init__(self, parent: 'MainWindow'):
         super().__init__()
         self.parent = parent
+        self.parent.paths_changed.connect(self.load_paths)
         self._shutting_down = False  # Flag to prevent new workers during shutdown
         # Thumbnail cache used for installed pack icons
         self._thumb_cache = os.path.join(os.path.expanduser("~"), ".pcsx2_manager_thumbs")
@@ -5741,6 +5545,7 @@ class SettingsTab(QWidget):
         self.pcsx2_exe = QLineEdit()
         self.pcsx2_exe.setPlaceholderText("Path to pcsx2.exe (optional)")
         self.pcsx2_exe.setToolTip("PCSX2 executable for quick launch")
+        self.pcsx2_exe.editingFinished.connect(self._save_pcsx2_exe)
         btn_pcsx2 = QPushButton("Browse…")
         btn_pcsx2.clicked.connect(lambda: self._pick_file(self.pcsx2_exe))
         self.btn_launch = QPushButton("Launch PCSX2")
@@ -5797,7 +5602,7 @@ class SettingsTab(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.addWidget(scroll)
 
-        self._detect()
+        self._load_settings()
 
     def _row(self, *widgets):
         w = QWidget()
@@ -5810,7 +5615,10 @@ class SettingsTab(QWidget):
 
     def _pick_file(self, line: QLineEdit):
         p, _ = QFileDialog.getOpenFileName(self, "Select file", os.path.expanduser("~"), "All files (*.*)")
-        if p: line.setText(p)
+        if p:
+            line.setText(p)
+            if line is self.pcsx2_exe:
+                self._save_pcsx2_exe()
 
     def _browse(self):
         d = QFileDialog.getExistingDirectory(self, "Select PCSX2 user directory", self.user_dir.text() or os.path.expanduser("~"))
@@ -5831,8 +5639,44 @@ class SettingsTab(QWidget):
         self.cheatsws_label.setText(self.paths["cheats_ws"])
         self.textures_label.setText(self.paths["textures"])
         self.logs_label.setText(self.paths["logs"])
-        self.parent.cheats_tab.load_paths(self.paths)
-        self.parent.textures_tab.load_paths(self.paths)
+        self.parent.state.pcsx2_paths = self.paths
+        self.parent.paths_changed.emit(self.paths)
+        self._save_user_dir()
+
+    # --- Persistence (QSettings) ---
+    def _qsettings(self) -> QSettings:
+        return QSettings('PCSX2-Manager', 'PatchTextureManager')
+
+    def _load_settings(self):
+        s = self._qsettings()
+        saved_dir = s.value('paths/user_dir', '', str)
+        if saved_dir:
+            self.user_dir.setText(saved_dir)
+            self._update_subs()
+        else:
+            self._detect()
+        saved_exe = s.value('paths/pcsx2_exe', '', str)
+        if saved_exe:
+            self.pcsx2_exe.setText(saved_exe)
+        saved_profiles = s.value('profiles/data', '', str)
+        if saved_profiles:
+            try:
+                self.profiles = json.loads(saved_profiles)
+                self._refresh_profiles()
+            except Exception:
+                pass
+
+    def _save_user_dir(self):
+        self._qsettings().setValue('paths/user_dir', self.user_dir.text().strip())
+
+    def _save_pcsx2_exe(self):
+        self._qsettings().setValue('paths/pcsx2_exe', self.pcsx2_exe.text().strip())
+
+    def _save_profiles(self):
+        try:
+            self._qsettings().setValue('profiles/data', json.dumps(self.profiles))
+        except Exception:
+            pass
 
     # INI toggles (best-effort; may vary by version)
     def _ini_set_bool(self, ini_path: str, key: str, val: bool):
@@ -5883,6 +5727,7 @@ class SettingsTab(QWidget):
         key = crc or serial or title
         self.profiles[key] = {"title": title, "serial": serial, "crc": crc}
         self._refresh_profiles()
+        self._save_profiles()
 
     def _refresh_profiles(self):
         self.profiles_list.clear()
@@ -5920,15 +5765,21 @@ class SettingsTab(QWidget):
         try:
             with open(path, 'r', encoding='utf-8') as f: self.profiles = json.load(f)
             self._refresh_profiles()
-           
+            self._save_profiles()
+
             QMessageBox.information(self, "Profiles", "Imported.")
         except Exception as e:
             QMessageBox.critical(self, "Import error", str(e))
 
 
 class MainWindow(QMainWindow):
+    # Shared state signals: tabs subscribe instead of reaching into each other directly.
+    paths_changed = Signal(dict)          # emitted with the latest PCSX2 paths dict
+    current_game_changed = Signal(object)  # emitted with a GameEntry (or None)
+
     def __init__(self):
         super().__init__()
+        self.state = AppState()
         self.setWindowTitle("PCSX2 Manager")
         self.setWindowIcon(QIcon("logo.png"))
         self.resize(1100, 750)
@@ -6214,6 +6065,8 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    QCoreApplication.setOrganizationName("PCSX2-Manager")
+    QCoreApplication.setApplicationName("PatchTextureManager")
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon("logo.png"))
     w = MainWindow()
