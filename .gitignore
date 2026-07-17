@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.idea/
+.vscode/
+.venv/
+*.egg-info/
+build/
+dist/
+
+# Runtime caches / generated at runtime
+cheat_cache/*.json
+!cheat_cache/.gitkeep

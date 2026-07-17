@@ -28,18 +28,6 @@ This project provides a Qt-based desktop application (PySide6) for working with 
 - Helpers for parsing and building PNACH files: `parse_pnach_text`, `parse_raw_8x8`, `build_pnach`
 - Thumbnail/cover fetching for installed packs (caches under the user's home directory)
 
-## Screenshots / Logo
-
-The repository includes `logo.png` which is used as the application icon and is shown above.
-
-### Screenshots (real)
-
-The following screenshots were captured from a running instance of the application and are included in `screenshots/`:
-
-| Cheats (.pnach) | Textures | Bulk Scanner |
-|---:|:---:|:---|
-| <img src="screenshots/real_cheats.png" alt="Cheats tab" width="360" /> | <img src="screenshots/real_textures.png" alt="Textures tab" width="360" /> | <img src="screenshots/real_bulk.png" alt="Bulk scanner" width="360" /> |
-
 ## Requirements
 
 - Python 3.10+ recommended
