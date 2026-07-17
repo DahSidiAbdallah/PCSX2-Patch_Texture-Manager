@@ -204,20 +204,17 @@ class CoverFetchWorker(QThread):
             except Exception:
                 urlopen = None
             if urlopen is None:
-                try:
-                    logger.debug("[CoverFetchWorker] requests not available; aborting cover fetch")
-                except Exception:
-                    pass
+                logger.warning("[CoverFetchWorker] Neither requests nor urllib available; cannot fetch covers")
                 self.fetch_failed.emit()
                 return
+            
+            attempted = []
             for candidate in self.urls:
                 if not candidate:
                     continue
+                attempted.append(candidate)
                 try:
-                    try:
-                        logger.debug(f"[CoverFetchWorker] probing: {candidate}")
-                    except Exception:
-                        pass
+                    logger.debug(f"[CoverFetchWorker] Trying: {candidate}")
                     with urlopen(candidate, timeout=12) as resp:
                         status = getattr(resp, 'status', 200)
                         content = resp.read() or b''
@@ -226,6 +223,7 @@ class CoverFetchWorker(QThread):
                             os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
                             with open(self.cache_path, 'wb') as fh:
                                 fh.write(content)
+                            # Record successful URL in index
                             try:
                                 idx_dir = os.path.dirname(self.cache_path)
                                 idx_file = os.path.join(idx_dir, 'index.json')
@@ -237,51 +235,45 @@ class CoverFetchWorker(QThread):
                                 data[key] = candidate
                                 with open(idx_file, 'w', encoding='utf-8') as outf:
                                     json.dump(data, outf)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"[CoverFetchWorker] Could not update index: {e}")
+                            
+                            logger.info(f"[CoverFetchWorker] ✓ Cover found: {os.path.basename(candidate)}")
                             self.fetched.emit(self.cache_path)
                             return
-                        except Exception as e:
-                            try:
-                                logger.debug(f"[CoverFetchWorker] write failed: {e}")
-                            except Exception:
-                                pass
+                        except (IOError, OSError) as e:
+                            logger.error(f"[CoverFetchWorker] Failed to save cover: {e}")
                             self.fetch_failed.emit()
                             return
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"[CoverFetchWorker] Failed: {candidate} - {e}")
                     continue
-            try:
-                logger.debug(f"[CoverFetchWorker] all candidates failed: {self.urls}")
-            except Exception:
-                pass
+            
+            logger.info(f"[CoverFetchWorker] ✗ No cover found (tried {len(attempted)} URLs)")
             self.fetch_failed.emit()
             return
 
-        # Try each candidate URL in order.  Prefer GET directly because
-        # GitHub raw endpoints often do not honour HEAD requests.  Any
+        # Try each candidate URL in order. Prefer GET directly because
+        # GitHub raw endpoints often do not honour HEAD requests. Any
         # successful response will be cached.
+        attempted = []
         for candidate in self.urls:
             if not candidate:
                 continue
+            attempted.append(candidate)
             try:
-                try:
-                    logger.debug(f"[CoverFetchWorker] downloading: {candidate}")
-                except Exception:
-                    pass
+                logger.debug(f"[CoverFetchWorker] Trying: {candidate}")
                 resp = requests.get(candidate, timeout=12)
                 status = getattr(resp, 'status_code', None)
                 content = getattr(resp, 'content', None) or b''
                 clen = len(content)
-                try:
-                    logger.debug(f"[CoverFetchWorker] response: status={status} content_len={clen} for {candidate}")
-                except Exception:
-                    pass
+                
                 if status == 200 and content:
                     try:
                         os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
                         with open(self.cache_path, 'wb') as fh:
                             fh.write(content)
-                        # update index.json for caching
+                        # Update index.json for caching
                         idx_dir = os.path.dirname(self.cache_path)
                         idx_file = os.path.join(idx_dir, 'index.json')
                         key = os.path.splitext(os.path.basename(candidate))[0]
@@ -292,18 +284,80 @@ class CoverFetchWorker(QThread):
                         data[key] = candidate
                         with open(idx_file, 'w', encoding='utf-8') as outf:
                             json.dump(data, outf)
+                        
+                        logger.info(f"[CoverFetchWorker] ✓ Cover found: {os.path.basename(candidate)} ({clen} bytes)")
                         self.fetched.emit(self.cache_path)
                         return
-                    except Exception:
-                        pass
-            except Exception:
+                    except (IOError, OSError) as e:
+                        logger.error(f"[CoverFetchWorker] Failed to save cover: {e}")
+                        self.fetch_failed.emit()
+                        return
+                else:
+                    logger.debug(f"[CoverFetchWorker] Not found (status={status}): {candidate}")
+            except requests.exceptions.RequestException as e:
+                logger.debug(f"[CoverFetchWorker] Request error: {e}")
+            except Exception as e:
+                logger.debug(f"[CoverFetchWorker] Unexpected error: {e}")
                 continue
+        
         # All candidates failed
+        logger.info(f"[CoverFetchWorker] ✗ No cover found (tried {len(attempted)} URLs)")
         self.fetch_failed.emit()
 
 
 def norm_serial_key(s: str) -> str:
     return (s or "").upper().replace("-", "").replace("_", "").replace(" ", "")
+
+
+def create_cover_placeholder(serial: str = "", size: int = 420) -> QPixmap:
+    """Create a placeholder pixmap for when no cover is available."""
+    placeholder = QPixmap(size, size)
+    placeholder.fill(Qt.lightGray)
+    
+    try:
+        painter = QPainter(placeholder)
+        if not painter.isActive():
+            logger.warning("[Placeholder] QPainter not active")
+            return placeholder
+        
+        painter.setPen(QColor(80, 80, 80))
+        font = painter.font()
+        font.setPointSize(11)
+        font.setBold(True)
+        painter.setFont(font)
+        
+        # Calculate text positioning
+        y_offset = size // 3
+        
+        # Draw main message
+        painter.drawText(20, y_offset, size - 40, 40, 
+                        Qt.AlignCenter | Qt.TextWordWrap, 
+                        "No cover available")
+        
+        # Draw serial if provided
+        if serial:
+            font.setPointSize(10)
+            font.setBold(False)
+            painter.setFont(font)
+            painter.drawText(20, y_offset + 50, size - 40, 40,
+                           Qt.AlignCenter | Qt.TextWordWrap,
+                           f"for {serial}")
+        
+        # Draw hint
+        font.setPointSize(9)
+        font.setItalic(True)
+        painter.setFont(font)
+        painter.setPen(QColor(120, 120, 120))
+        painter.drawText(20, size - 80, size - 40, 60,
+                        Qt.AlignCenter | Qt.TextWordWrap,
+                        "(Right-click to retry)")
+        
+        painter.end()
+        logger.debug(f"[Placeholder] Created placeholder for {serial or 'unknown'}")
+    except Exception as e:
+        logger.error(f"[Placeholder] Failed to create placeholder: {e}")
+    
+    return placeholder
 
 
 def bundled_lookup_title(serial: str) -> Optional[str]:
@@ -1154,8 +1208,8 @@ class CheatsTab(QWidget):
                         for k, v in obj.items():
                             if k and v:
                                 self.mapping[str(k).upper()] = str(v)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to load mapping: {e}")
         self.refresh_list()
 
     def save_mapping(self, path: Optional[str] = None):
@@ -1166,35 +1220,35 @@ class CheatsTab(QWidget):
             with open(outp, 'w', encoding='utf-8') as fh:
                 json.dump({k: self.mapping[k] for k in sorted(self.mapping.keys())}, fh, ensure_ascii=False, indent=2)
             # reflect chosen path in UI if user-specified via load
-            try:
-                if path:
-                    self.map_path.setText(outp)
-            except Exception:
-                pass
+            if path and hasattr(self, 'map_path'):
+                self.map_path.setText(outp)
             return True
-        except Exception:
+        except (IOError, OSError) as e:
+            logger.error(f"Failed to save mapping to {outp}: {e}")
             return False
     
     def _load_cheats_database(self) -> dict:
         """Load the built-in PS2 cheats database."""
-        try:
-            # Try merged database first (2,680 games)
-            db_paths = [
-                os.path.join(os.path.dirname(__file__), 'ps2_cheats_database_merged.json'),
-                os.path.join(os.path.dirname(__file__), 'ps2_cheats_database.json')
-            ]
-            for db_path in db_paths:
+        db_paths = [
+            os.path.join(os.path.dirname(__file__), 'ps2_cheats_database_merged.json'),
+            os.path.join(os.path.dirname(__file__), 'ps2_cheats_database.json')
+        ]
+        
+        for db_path in db_paths:
+            try:
                 if os.path.isfile(db_path):
                     with open(db_path, 'r', encoding='utf-8') as f:
                         db = json.load(f)
                         games_count = len(db.get('games', []))
                         logger.info(f"[CheatsTab] Loaded {games_count} games from {os.path.basename(db_path)}")
                         return db
-        except Exception as e:
-            try:
-                logger.debug(f"[CheatsTab] Failed to load cheats database: {e}")
-            except Exception:
-                pass
+            except json.JSONDecodeError as e:
+                logger.error(f"[CheatsTab] Invalid JSON in {db_path}: {e}")
+            except Exception as e:
+                logger.error(f"[CheatsTab] Failed to load {db_path}: {e}")
+        
+        # Only show warning if none of the databases could be loaded
+        logger.warning("[CheatsTab] No cheats database found - online features only")
         return {"games": []}
 
     # ---- Worker management to prevent GC / crashes ----
@@ -1215,8 +1269,6 @@ class CheatsTab(QWidget):
             worker.deleteLater()
         worker.finished.connect(_cleanup)
         worker.start()
-
-    # (Old duplicate preview handler removed)
 
     def _preview_context_menu(self, pos):
         # Show context menu with Refresh Cover action
@@ -1304,6 +1356,11 @@ class CheatsTab(QWidget):
                         pm = QPixmap(bundled)
                         if pm and not pm.isNull():
                             _set_label_pixmap_exact(self.preview_cover, pm, max_dim=420)
+                            return
+                    # Show placeholder
+                    placeholder = create_cover_placeholder(serial)
+                    if placeholder and not placeholder.isNull():
+                        _set_label_pixmap_exact(self.preview_cover, placeholder, max_dim=420)
                 except Exception:
                     try:
                         self.preview_cover.clear()
@@ -1330,7 +1387,7 @@ class CheatsTab(QWidget):
         # Quick Start Guide (collapsible)
         self.quick_start_group = QGroupBox("📖 Quick Start Guide")
         self.quick_start_group.setCheckable(True)
-        self.quick_start_group.setChecked(False)
+        self.quick_start_group.setChecked(True)  # Expand by default for beginners
         qs_layout = QVBoxLayout()
         quick_start_text = QLabel(
             "<b>How to add cheats:</b><br>"
@@ -1525,8 +1582,8 @@ class CheatsTab(QWidget):
             "Paste or edit cheat codes here...\n\n"
             "Supported formats:\n"
             "• Raw codes (XXXXXXXX YYYYYYYY)\n"
-            "• PNACH format\n"
-            "• Most common cheat formats"
+            "• PNACH format (patch=1,EE,XXXXXXXX,extended,YYYYYYYY)\n"
+            "• Format is auto-detected"
         )
         self.codes_text.setMinimumHeight(150)
         bl.addWidget(self.codes_text)
@@ -1571,17 +1628,10 @@ class CheatsTab(QWidget):
         self.advanced_group.setChecked(False)
         adv_layout = QVBoxLayout(self.advanced_group)
         
-        # Input mode selector
+        # Open any file button
         mode_row = QWidget()
         mode_layout = QHBoxLayout(mode_row)
         mode_layout.setContentsMargins(0, 0, 0, 0)
-        mode_layout.addWidget(QLabel("Input mode:"))
-        self.input_mode = QComboBox()
-        self.input_mode.addItems([
-            "Auto-detect format",
-            "Force PNACH format",
-        ])
-        mode_layout.addWidget(self.input_mode)
         self.btn_open_codes = QPushButton("Open Any File…")
         self.btn_open_codes.clicked.connect(self._open_codes_file)
         mode_layout.addWidget(self.btn_open_codes)
@@ -1611,6 +1661,7 @@ class CheatsTab(QWidget):
         self.chk_online.setToolTip("Search PSXDataCenter.com for game titles (requires internet)")
         
         self.btn_resolve = QPushButton("Resolve Title Now")
+        self.btn_resolve.setToolTip("Look up the game title using the Serial/CRC you entered")
         self.btn_resolve.clicked.connect(self._resolve_title_clicked)
         
         resolver_layout.addWidget(self.chk_offline_lists)
@@ -1643,6 +1694,7 @@ class CheatsTab(QWidget):
         search_layout.addWidget(QLabel("Search:"))
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Filter by game name or CRC...")
+        self.search_box.textChanged.connect(self._filter_existing_cheats)
         search_layout.addWidget(self.search_box)
         v2.addWidget(search_row)
         
@@ -1966,7 +2018,6 @@ class CheatsTab(QWidget):
                     m = re.search(r"([0-9A-Fa-f]{8})", os.path.basename(path))
                     prefer_crc = m.group(1) if m else None
                     self._autofill_from_text(text, prefer_filename_crc=prefer_crc)
-                    self.input_mode.setCurrentIndex(1)
                 except Exception as ex:
                     QMessageBox.warning(self, 'Drop error', str(ex))
             elif low.endswith(('.zip',)):
@@ -1983,7 +2034,6 @@ class CheatsTab(QWidget):
                     m = re.search(r"([0-9A-Fa-f]{8})", os.path.basename(path))
                     prefer_crc = m.group(1) if m else None
                     self._autofill_from_text(text, prefer_filename_crc=prefer_crc)
-                    self.input_mode.setCurrentIndex(0)
                 except Exception as ex:
                     QMessageBox.warning(self, 'Drop error', str(ex))
 
@@ -2018,11 +2068,6 @@ class CheatsTab(QWidget):
             m = re.search(r"([0-9A-Fa-f]{8})", fname)
             prefer_crc = m.group(1) if m else None
             self._autofill_from_text(text, prefer_filename_crc=prefer_crc)
-            # Pick input mode based on extension
-            if path.lower().endswith(".pnach"):
-                self.input_mode.setCurrentIndex(1)  # Existing PNACH
-            else:
-                self.input_mode.setCurrentIndex(0)  # RAW 8x8 pairs (try conversion if needed)
         except Exception as e:
             QMessageBox.warning(self, "Open error", f"Failed to open: {e}")
 
@@ -2040,56 +2085,15 @@ class CheatsTab(QWidget):
             m = re.search(r"([0-9A-Fa-f]{8})", fname)
             prefer_crc = m.group(1) if m else None
             self._autofill_from_text(text, prefer_filename_crc=prefer_crc)
-            # Pick input mode based on extension
-            if path.lower().endswith(".pnach"):
-                self.input_mode.setCurrentIndex(1)  # Existing PNACH
-            else:
-                self.input_mode.setCurrentIndex(0)  # RAW 8x8 pairs (try conversion if needed)
         except Exception as e:
             QMessageBox.warning(self, "Open error", f"Failed to open: {e}")
 
     # --- Code Conversion ---
-    def _convert_with_omniconvert(self, text: str) -> Optional[str]:
-        """Optional: call an external Omniconvert CLI if user configured path in Settings.
-        Expect it to output RAW pairs that we return as string. Placeholder implementation."""
-        exe = self.parent.settings_tab.omniconvert_path.text().strip()
-        if not exe or not os.path.isfile(exe):
-            return None
-        try:
-            # Placeholder for future Omniconvert CLI integration.
-            return None
-        except Exception:
-            return None
-
-        # If cache_file was not created and no images found, try to synthesize a tiny placeholder so UI has an icon
-        try:
-            if not os.path.isfile(cache_file):
-                # Create a 64x64 placeholder with a neutral color and key text (if key provided)
-                try:
-                    pix = QPixmap(64, 64)
-                    pix.fill(QColor(200, 200, 200))
-                    painter = QPainter(pix)
-                    painter.setPen(QColor(120, 120, 120))
-                    # draw a simple center rectangle accent
-                    painter.drawRect(8, 8, 48, 48)
-                    try:
-                        # Optionally draw first 4 characters of key
-                        if key:
-                            text = (key[:4] if len(key) > 0 else '')
-                            painter.drawText(12, 36, text)
-                    except Exception:
-                        pass
-                    painter.end()
-                    pix.save(cache_file, 'PNG')
-                    return cache_file
-                except Exception:
-                    pass
-        except Exception:
-            pass
+    # Omniconvert integration removed - placeholder was non-functional
+    # Users can paste RAW codes directly or use the built-in parser
 
     def _basic_nonraw_to_raw(self, text: str) -> List[Tuple[str,str]]:
-        """Very light parser: if lines look like XXXXXXXX YYYYYYYY or XXXXXXXX=YYYYYYYY, treat as RAW.
-        This does not convert ARMAX encodings; for that use Omniconvert."""
+        """Very light parser: if lines look like XXXXXXXX YYYYYYYY or XXXXXXXX=YYYYYYYY, treat as RAW."""
         return parse_raw_8x8(text)
 
     # --- Title Resolver (load mapping) ---
@@ -2277,8 +2281,18 @@ class CheatsTab(QWidget):
         crc = normalize_crc(self.crc_edit.text())
         content = self.codes_text.toPlainText()
 
-        mode = self.input_mode.currentIndex()
-        if mode == 0:  # RAW -> PNACH
+        # Auto-detect format based on content
+        if 'patch=' in content.lower() or content.strip().startswith('//'):
+            # Looks like PNACH format
+            pd = parse_pnach_text(content)
+            if title: pd.title = title
+            if serials: pd.serials = serials
+            if crc: pd.crc = crc
+            if not pd.raw_pairs:
+                QMessageBox.information(self, "No patch lines", "The .pnach contains no patch lines in 'patch=1,EE,XXXXXXXX,extended,YYYYYYYY' format.")
+                return
+        else:
+            # Try to parse as RAW pairs
             pairs = parse_raw_8x8(content)
             if not pairs:
                 bad = self._collect_invalid_raw_lines(content)
@@ -2289,20 +2303,6 @@ class CheatsTab(QWidget):
                 )
                 return
             pd = PnachData(crc=crc, serials=serials, title=title, raw_pairs=pairs)
-        elif mode == 1:  # Existing PNACH -> normalize
-            pd = parse_pnach_text(content)
-            if title: pd.title = title
-            if serials: pd.serials = serials
-            if crc: pd.crc = crc
-            if not pd.raw_pairs:
-                QMessageBox.information(self, "No patch lines", "The .pnach contains no patch lines in 'patch=1,EE,XXXXXXXX,extended,YYYYYYYY' format.")
-        else:
-            # Fallback: try to parse as RAW pairs
-            raw_pairs = self._basic_nonraw_to_raw(content)
-            if not raw_pairs:
-                QMessageBox.information(self, "No codes", "No valid RAW pairs found.")
-                return
-            pd = PnachData(crc=crc, serials=serials, title=title, raw_pairs=raw_pairs)
         self.preview.setPlainText(build_pnach(pd))
 
     def _save_to_cheats(self):
@@ -2378,7 +2378,7 @@ class CheatsTab(QWidget):
             QMessageBox.information(self, "Saved", f"Wrote:\n{outpath}")
             self.refresh_list()
         except Exception as e:
-            QMessageBox.critical(self, "Write failed", str(e))
+            QMessageBox.critical(self, "Save Failed", f"Could not save the cheat file.\n\nError: {str(e)}\n\nPlease check:\n- The cheats folder path is correct\n- You have write permissions\n- PCSX2 is not running")
 
     def refresh_list(self):
         self.list.clear()
@@ -2387,6 +2387,18 @@ class CheatsTab(QWidget):
             for name in sorted(os.listdir(cheats_dir)):
                 if name.lower().endswith(".pnach"):
                     self.list.addItem(QListWidgetItem(name))
+        # Apply current filter if any
+        self._filter_existing_cheats(self.search_box.text())
+
+    def _filter_existing_cheats(self, text: str):
+        """Filter the installed cheats list by search text."""
+        search_text = text.lower().strip()
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            if not search_text:
+                item.setHidden(False)
+            else:
+                item.setHidden(search_text not in item.text().lower())
 
     # QoL: auto-title when user types CRC/Serial
     def _maybe_autotitle(self):
@@ -2505,11 +2517,6 @@ class CheatsTab(QWidget):
         if game and 'regions' in game:
             for region_name in sorted(game['regions'].keys()):
                 self.region_selector.addItem(region_name, game['regions'][region_name])
-    
-    def _on_game_selected(self, index):
-        """Handle game selection in the browser (legacy - for compatibility)."""
-        # This is now replaced by _on_game_list_selected
-        pass
     
     def _on_region_selected(self, index):
         """Handle region selection in the browser."""
@@ -2880,6 +2887,11 @@ class TexturesTab(QWidget):
                         pm = QPixmap(bundled)
                         if pm and not pm.isNull():
                             _set_label_pixmap_exact(self.preview_cover, pm, max_dim=420)
+                            return
+                    # Show placeholder
+                    placeholder = create_cover_placeholder(serial)
+                    if placeholder and not placeholder.isNull():
+                        _set_label_pixmap_exact(self.preview_cover, placeholder, max_dim=420)
                 except Exception:
                     try:
                         self.preview_cover.clear()
@@ -2910,7 +2922,7 @@ class TexturesTab(QWidget):
         self.btn_browse_textures.clicked.connect(lambda: self._pick_dir(self.textures_dir))
 
         self.target_folder_name = QLineEdit()
-        self.target_folder_name.setPlaceholderText("Prefer the game's   Serial (e.g. SLUS-12345) or a custom folder name")
+        self.target_folder_name.setPlaceholderText("Game ID (e.g., SLUS-12345) or custom folder name")
         self.btn_zip = QPushButton("Import ZIP…")
         self.btn_zip.clicked.connect(self._import_zip)
         self.btn_folder = QPushButton("Import Folder…")
@@ -3007,13 +3019,13 @@ class TexturesTab(QWidget):
         for b in (self.btn_open_pack, self.btn_install_pack, self.btn_install_selected, self.btn_remove_pack, self.btn_refresh_packs):
             br.addWidget(b)
         br.addStretch(1)
-        # Add Resolve All and Show Matched HTML debug buttons
-        self.btn_resolve_all = QPushButton("Resolve All")
-        self.btn_resolve_all.clicked.connect(self._resolve_all_packs)
-        self.btn_show_matched = QPushButton("Show matched HTML")
-        self.btn_show_matched.clicked.connect(self._show_matched_for_selected)
-        br.addWidget(self.btn_resolve_all)
-        br.addWidget(self.btn_show_matched)
+        # Debug buttons hidden for cleaner UI (uncomment if needed for troubleshooting)
+        # self.btn_resolve_all = QPushButton("Resolve All")
+        # self.btn_resolve_all.clicked.connect(self._resolve_all_packs)
+        # self.btn_show_matched = QPushButton("Show matched HTML")
+        # self.btn_show_matched.clicked.connect(self._show_matched_for_selected)
+        # br.addWidget(self.btn_resolve_all)
+        # br.addWidget(self.btn_show_matched)
         pv.addWidget(btn_row)
         layout.addWidget(packs_group)
 
@@ -3194,7 +3206,7 @@ class TexturesTab(QWidget):
 
             QMessageBox.information(self, "Imported (staged)", f"Imported ZIP into staging folder:\n{staging}\n\nPacks are available in the list and will be installed only when you click Install.")
         except Exception as e:
-            QMessageBox.critical(self, "ZIP error", str(e))
+            QMessageBox.critical(self, "ZIP Import Failed", f"Could not import the ZIP file.\n\nError: {str(e)}\n\nPlease check:\n- The file is a valid ZIP archive\n- It's not corrupted\n- You have enough disk space")
 
     def _imports_root(self, base_textures_dir: str) -> str:
         """Return the configured imports/staging root. Reads a settings key if present, otherwise defaults to <base>/_imports."""
@@ -3854,31 +3866,14 @@ class TexturesTab(QWidget):
         except Exception:
             pass
 
-        # find a cover image (first local image) and load scaled pixmap
+        # Try to get game cover - prioritize actual covers over random texture files
         pix = None
-        try:
-            exts = ('.png', '.jpg', '.jpeg', '.bmp', '.tga')
-            if pack_dir and os.path.exists(pack_dir):
-                for root, _, files in os.walk(pack_dir):
-                    for f in files:
-                        if f.lower().endswith(exts):
-                            pth = os.path.join(root, f)
-                            pm = QPixmap(pth)
-                            if pm and not pm.isNull():
-                                # keep original pixmap; we'll size the label to fit while preserving aspect ratio
-                                pix = pm
-                                break
-                    if pix:
-                        break
-        except Exception:
-            pix = None
-
-        # If no local cover found and we have a serial, try the remote cover URL and cache it (async)
-        # Ensure serial is normalized and prefer stored serial when available
+        
+        # First check if we have a serial to fetch proper cover
         if serial_stored:
             serial_val = serial_stored
 
-        if not pix and serial_val and requests is not None:
+        if serial_val and requests is not None:
             try:
                 # Normalize the serial for cache filename and remote URL lookups
                 serial_key = norm_serial_key(serial_val)
@@ -3943,17 +3938,29 @@ class TexturesTab(QWidget):
 
                     def _on_failed():
                         try:
+                            # Try cached file first
                             if os.path.isfile(cache_name):
                                 pm = QPixmap(cache_name)
                                 if pm and not pm.isNull():
                                     _set_label_pixmap_exact(self.preview_cover, pm, max_dim=420)
                                     return
+                            
+                            # Try bundled logo
                             bundled = os.path.join(os.path.dirname(__file__), 'logo.png')
                             if os.path.isfile(bundled):
                                 pm = QPixmap(bundled)
                                 if pm and not pm.isNull():
                                     _set_label_pixmap_exact(self.preview_cover, pm, max_dim=420)
-                        except Exception:
+                                    return
+                            
+                            # Show placeholder with hint - use exact fitting like other pixmaps
+                            placeholder = create_cover_placeholder(serial_val)
+                            if placeholder and not placeholder.isNull():
+                                _set_label_pixmap_exact(self.preview_cover, placeholder, max_dim=420)
+                            else:
+                                self.preview_cover.clear()
+                        except Exception as e:
+                            logger.error(f"Error in _on_failed: {e}")
                             try:
                                 self.preview_cover.clear()
                             except Exception:
@@ -5657,11 +5664,6 @@ class BulkTab(QWidget):
 
         # backfill anything missing via the same logic used elsewhere
         cheats._autofill_from_text(text, prefer_filename_crc=prefer_crc)
-        # pick mode based on extension
-        if path.lower().endswith(".pnach"):
-            cheats.input_mode.setCurrentIndex(1)
-        else:
-            cheats.input_mode.setCurrentIndex(0)
 
         # jump to Cheats tab
         self.parent.tabs.setCurrentWidget(cheats)
@@ -5699,7 +5701,7 @@ class SettingsTab(QWidget):
         # Detected subfolders (simplified, collapsible)
         subgrp = QGroupBox("Detected Folders")
         subgrp.setCheckable(True)
-        subgrp.setChecked(False)
+        subgrp.setChecked(True)  # Expand by default to show detected paths
         fl2 = QFormLayout(subgrp)
         self.cheats_label = QLabel("")
         self.cheatsws_label = QLabel("")
@@ -5736,12 +5738,6 @@ class SettingsTab(QWidget):
         cfg.setChecked(False)
         cfgl = QFormLayout(cfg)
         
-        self.omniconvert_path = QLineEdit()
-        self.omniconvert_path.setPlaceholderText("Path to Omniconvert.exe (optional)")
-        self.omniconvert_path.setToolTip("External tool for converting cheat formats")
-        btn_omni = QPushButton("Browse…")
-        btn_omni.clicked.connect(lambda: self._pick_file(self.omniconvert_path))
-        
         self.pcsx2_exe = QLineEdit()
         self.pcsx2_exe.setPlaceholderText("Path to pcsx2.exe (optional)")
         self.pcsx2_exe.setToolTip("PCSX2 executable for quick launch")
@@ -5750,7 +5746,6 @@ class SettingsTab(QWidget):
         self.btn_launch = QPushButton("Launch PCSX2")
         self.btn_launch.clicked.connect(self._launch_pcsx2)
 
-        cfgl.addRow("Omniconvert:", self._row(self.omniconvert_path, btn_omni))
         cfgl.addRow("PCSX2 exe:", self._row(self.pcsx2_exe, btn_pcsx2, self.btn_launch))
         layout.addWidget(cfg)
 
@@ -5934,9 +5929,133 @@ class SettingsTab(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PCSX2 Manager - Cheats & Textures")
+        self.setWindowTitle("PCSX2 Manager")
         self.setWindowIcon(QIcon("logo.png"))
-        self.resize(1000, 700)
+        self.resize(1100, 750)
+        
+        # Apply modern dark theme
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #2b2b2b;
+            }
+            QTabWidget::pane {
+                border: none;
+                background-color: #2b2b2b;
+            }
+            QTabBar::tab {
+                background-color: #3c3c3c;
+                color: #cccccc;
+                padding: 12px 20px;
+                margin-right: 2px;
+                border: none;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+            }
+            QTabBar::tab:selected {
+                background-color: #2b2b2b;
+                color: #ffffff;
+            }
+            QTabBar::tab:hover {
+                background-color: #404040;
+            }
+            QWidget {
+                background-color: #2b2b2b;
+                color: #cccccc;
+            }
+            QLineEdit, QTextEdit, QComboBox {
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                padding: 6px;
+                color: #ffffff;
+            }
+            QLineEdit:focus, QTextEdit:focus {
+                border: 1px solid #0078d4;
+            }
+            QPushButton {
+                background-color: #0078d4;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1084e0;
+            }
+            QPushButton:pressed {
+                background-color: #006cc1;
+            }
+            QPushButton:disabled {
+                background-color: #555555;
+                color: #888888;
+            }
+            QGroupBox {
+                border: 1px solid #555555;
+                border-radius: 6px;
+                margin-top: 12px;
+                padding-top: 12px;
+                font-weight: bold;
+                color: #ffffff;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+            QLabel {
+                color: #cccccc;
+            }
+            QListWidget, QTreeWidget, QTableWidget {
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                color: #ffffff;
+            }
+            QListWidget::item:selected, QTreeWidget::item:selected, QTableWidget::item:selected {
+                background-color: #0078d4;
+            }
+            QListWidget::item:hover, QTreeWidget::item:hover {
+                background-color: #404040;
+            }
+            QProgressBar {
+                border: 1px solid #555555;
+                border-radius: 4px;
+                text-align: center;
+                background-color: #3c3c3c;
+            }
+            QProgressBar::chunk {
+                background-color: #0078d4;
+                border-radius: 3px;
+            }
+            QScrollBar:vertical {
+                background-color: #2b2b2b;
+                width: 12px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #555555;
+                border-radius: 6px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #666666;
+            }
+            QCheckBox {
+                spacing: 8px;
+                color: #cccccc;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                background-color: #3c3c3c;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #0078d4;
+                border-color: #0078d4;
+            }
+        """)
+        
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
@@ -6033,66 +6152,63 @@ class MainWindow(QMainWindow):
             msg.exec()
             settings.setValue('welcome_shown', True)
 
+    def _cleanup_workers(self, tab, timeout_ms=1000):
+        """Helper to clean up workers for a given tab."""
+        if not hasattr(tab, '_workers'):
+            return
+        
+        for worker in list(tab._workers):
+            try:
+                if not worker.isRunning():
+                    continue
+                
+                # Request graceful quit
+                worker.quit()
+                if worker.wait(timeout_ms):
+                    continue  # Successfully quit
+                
+                # Force terminate if still running
+                logger.warning(f"Force terminating worker: {worker.__class__.__name__}")
+                worker.terminate()
+                worker.wait(500)  # Give terminate a moment
+            except RuntimeError as e:
+                # Worker already deleted
+                logger.debug(f"Worker cleanup: {e}")
+            except Exception as e:
+                logger.error(f"Error cleaning up worker: {e}")
+
     def closeEvent(self, event):
         """Clean up all running threads before closing."""
-        try:
-            # Set shutdown flags to prevent new workers
-            if hasattr(self, 'cheats_tab'):
-                self.cheats_tab._shutting_down = True
-            if hasattr(self, 'textures_tab'):
-                self.textures_tab._shutting_down = True
-            if hasattr(self, 'bulk_tab'):
-                self.bulk_tab._shutting_down = True
-            
-            # Stop all workers in CheatsTab
-            if hasattr(self.cheats_tab, '_workers'):
-                for worker in list(self.cheats_tab._workers):
-                    try:
-                        if worker.isRunning():
-                            worker.quit()
-                            worker.wait(1000)  # Wait up to 1 second
-                        if worker.isRunning():
-                            worker.terminate()  # Force terminate if still running
-                    except Exception:
-                        pass
-
-            # Stop all workers in TexturesTab
-            if hasattr(self.textures_tab, '_workers'):
-                for worker in list(self.textures_tab._workers):
-                    try:
-                        if worker.isRunning():
-                            worker.quit()
-                            worker.wait(1000)  # Wait up to 1 second
-                        if worker.isRunning():
-                            worker.terminate()  # Force terminate if still running
-                    except Exception:
-                        pass
-
-            # Stop BulkTab worker (stored as self.worker)
+        logger.info("Application closing - cleaning up workers...")
+        
+        # Set shutdown flags to prevent new workers
+        for tab_name in ['cheats_tab', 'textures_tab', 'bulk_tab']:
+            if hasattr(self, tab_name):
+                tab = getattr(self, tab_name)
+                tab._shutting_down = True
+        
+        # Clean up workers in each tab
+        if hasattr(self, 'cheats_tab'):
+            self._cleanup_workers(self.cheats_tab)
+        
+        if hasattr(self, 'textures_tab'):
+            self._cleanup_workers(self.textures_tab)
+        
+        if hasattr(self, 'bulk_tab'):
+            # Handle legacy single worker pattern
             if hasattr(self.bulk_tab, 'worker') and self.bulk_tab.worker:
                 try:
                     if self.bulk_tab.worker.isRunning():
                         self.bulk_tab.worker.quit()
-                        self.bulk_tab.worker.wait(1000)
-                    if self.bulk_tab.worker.isRunning():
-                        self.bulk_tab.worker.terminate()
-                except Exception:
-                    pass
+                        if not self.bulk_tab.worker.wait(1000):
+                            self.bulk_tab.worker.terminate()
+                except Exception as e:
+                    logger.error(f"Error cleaning up bulk worker: {e}")
             
-            # Stop all workers in BulkTab (if it has _workers list)
-            if hasattr(self.bulk_tab, '_workers'):
-                for worker in list(self.bulk_tab._workers):
-                    try:
-                        if worker.isRunning():
-                            worker.quit()
-                            worker.wait(1000)  # Wait up to 1 second
-                        if worker.isRunning():
-                            worker.terminate()  # Force terminate if still running
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-
+            # Handle new worker list pattern
+            self._cleanup_workers(self.bulk_tab)
+        
+        logger.info("Worker cleanup complete")
         event.accept()
 
 
