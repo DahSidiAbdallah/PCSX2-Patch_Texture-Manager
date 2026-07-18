@@ -5843,16 +5843,7 @@ class MainWindow(QMainWindow):
         self._show_welcome_if_needed()
 
     def open_settings_dialog(self):
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Settings")
-        dlg.resize(640, 700)
-        lay = QVBoxLayout(dlg)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(self.settings_tab)
-        dlg.exec()
-        # Detach before the dialog is GC'd so settings_tab survives to be reopened.
-        lay.removeWidget(self.settings_tab)
-        self.settings_tab.setParent(self)
+        self._open_widget_dialog(self.settings_tab, "Settings", size=(640, 700))
 
     def dragEnterEvent(self, e: QDragEnterEvent):
         if e.mimeData().hasUrls():
@@ -5877,10 +5868,43 @@ class MainWindow(QMainWindow):
         about_act.triggered.connect(self._about)
         menu.addAction(about_act)
         menu.addSeparator()
+
+        cheats_act = QAction("Advanced Cheat Editor…", self)
+        cheats_act.triggered.connect(self.open_advanced_cheats)
+        menu.addAction(cheats_act)
+        textures_act = QAction("Advanced Texture Manager…", self)
+        textures_act.triggered.connect(self.open_advanced_textures)
+        menu.addAction(textures_act)
+        menu.addSeparator()
+
         exit_act = QAction("Exit", self)
         exit_act.triggered.connect(self.close)
         menu.addAction(exit_act)
         return menu
+
+    def _open_widget_dialog(self, widget: QWidget, title: str, size=(900, 700)):
+        """Host an existing tab widget (Cheats/Textures/Settings) in a one-off
+        modal dialog, then detach it back so it survives to be reopened."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.resize(*size)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(widget)
+        dlg.exec()
+        lay.removeWidget(widget)
+        widget.setParent(self)
+
+    def open_advanced_cheats(self):
+        game = self.state.current_game
+        if game:
+            self.cheats_tab.title_edit.setText(game.title or "")
+            self.cheats_tab.serial_edit.setText(game.serial or "")
+            self.cheats_tab.crc_edit.setText(game.crc or "")
+        self._open_widget_dialog(self.cheats_tab, "Advanced Cheat Editor")
+
+    def open_advanced_textures(self):
+        self._open_widget_dialog(self.textures_tab, "Advanced Texture Manager")
 
     def _about(self):
         QMessageBox.information(
