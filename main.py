@@ -5448,16 +5448,75 @@ class TitleBar(QWidget):
         super().mouseDoubleClickEvent(e)
 
 
-class GameScanWorker(QThread):
-    """Walks a folder for PS2 disc images and extracts a serial from each filename.
+def read_iso_serial(path: str) -> Optional[str]:
+    """Read the PS2 serial directly out of an ISO9660 disc image's SYSTEM.CNF
+    (the boot file every PS2 disc has, containing e.g. "BOOT2 = cdrom0:\\SLUS_205.46;1").
 
-    v1 is filename-based only (e.g. "SLUS-20946 - Title.iso") -- no ISO9660/CHD
-    content parsing. That covers the vast majority of real-world ROM sets and
-    keeps this dependency-free; documented as a known limitation.
+    This is the fallback for the very common case where the filename doesn't
+    embed the serial at all (many "clean" ROM sets are named by title only, e.g.
+    "Grand Theft Auto - San Andreas (USA).iso"). Implemented as a minimal,
+    read-only ISO9660 primary-volume-descriptor + root-directory walk -- no new
+    dependency. Only handles plain 2048-byte-sector .iso images (not raw
+    2352-byte .bin or compressed .chd/.cso); returns None on any failure.
+    """
+    try:
+        with open(path, 'rb') as f:
+            f.seek(16 * 2048)
+            pvd = f.read(2048)
+            if len(pvd) < 2048 or pvd[1:6] != b'CD001':
+                return None
+            root_record = pvd[156:156 + 34]
+            root_lba = int.from_bytes(root_record[2:6], 'little')
+            root_size = int.from_bytes(root_record[10:14], 'little')
+            if root_size <= 0 or root_size > 10 * 1024 * 1024:
+                return None
+
+            f.seek(root_lba * 2048)
+            root_data = f.read(root_size)
+            system_cnf = None
+            i = 0
+            while i < len(root_data):
+                rec_len = root_data[i]
+                if rec_len == 0:
+                    i = ((i // 2048) + 1) * 2048
+                    continue
+                if rec_len < 33 or i + rec_len > len(root_data):
+                    break
+                rec = root_data[i:i + rec_len]
+                id_len = rec[32]
+                name = rec[33:33 + id_len].decode('ascii', errors='ignore').upper()
+                if name.startswith('SYSTEM.CNF'):
+                    system_cnf = {
+                        'lba': int.from_bytes(rec[2:6], 'little'),
+                        'size': int.from_bytes(rec[10:14], 'little'),
+                    }
+                    break
+                i += rec_len
+
+            if not system_cnf or not (0 < system_cnf['size'] <= 65536):
+                return None
+            f.seek(system_cnf['lba'] * 2048)
+            content = f.read(system_cnf['size']).decode('ascii', errors='ignore')
+            m = re.search(r'([A-Za-z]{4})_(\d{3})\.(\d{2})', content)
+            if m:
+                return f"{m.group(1).upper()}-{m.group(2)}{m.group(3)}"
+    except Exception as e:
+        logger.debug(f"[read_iso_serial] Failed to read {path}: {e}")
+    return None
+
+
+class GameScanWorker(QThread):
+    """Walks a folder for PS2 disc images and extracts each one's serial.
+
+    Tries the filename first (fast, e.g. "SLUS-20946 - Title.iso"); if that
+    doesn't contain a serial, falls back to reading SYSTEM.CNF directly out of
+    plain .iso images via read_iso_serial(). .bin/.chd/.cso files without a
+    filename serial are skipped -- reading their content would need raw-sector
+    or decompression handling this v1 doesn't have.
     """
 
     progressed = Signal(int, int)
-    finished = Signal(list)  # list[GameEntry]
+    finished = Signal(list, int)  # entries, total disc images found (before serial resolution)
 
     GAME_EXTS = ('.iso', '.bin', '.chd', '.cso')
 
@@ -5481,16 +5540,19 @@ class GameScanWorker(QThread):
 
         for i, path in enumerate(paths, 1):
             fname = os.path.basename(path)
+            serial = None
             m = SERIAL_RE.search(fname)
             if m:
                 serial = m.group(0).upper().replace('_', '-').replace(' ', '-')
-                if serial not in seen:
-                    seen.add(serial)
-                    title = bundled_lookup_title(serial) or os.path.splitext(fname)[0]
-                    entries.append(GameEntry(serial=serial, title=title, crc=None, source_path=path))
+            elif path.lower().endswith('.iso'):
+                serial = read_iso_serial(path)
+            if serial and serial not in seen:
+                seen.add(serial)
+                title = bundled_lookup_title(serial) or os.path.splitext(fname)[0]
+                entries.append(GameEntry(serial=serial, title=title, crc=None, source_path=path))
             self.progressed.emit(i, total)
 
-        self.finished.emit(entries)
+        self.finished.emit(entries, len(paths))
 
 
 def _entry_to_dict(g: GameEntry) -> dict:
@@ -5679,7 +5741,7 @@ class LibraryView(QWidget):
         self.scan_progress.setRange(0, total)
         self.scan_progress.setValue(current)
 
-    def _on_scan_finished(self, entries):
+    def _on_scan_finished(self, entries, total_files):
         self.scan_progress.setVisible(False)
         self.btn_scan.setEnabled(True)
         added = 0
@@ -5689,10 +5751,16 @@ class LibraryView(QWidget):
                 added += 1
         self._save_library()
         self._refresh_list(self.search_box.text())
-        QMessageBox.information(
-            self, "Scan Complete",
-            f"Found {len(entries)} game(s) in that folder, added {added} new to your library."
-        )
+
+        if total_files == 0:
+            msg = "No disc images (.iso/.bin/.chd/.cso) were found in that folder."
+        elif not entries:
+            msg = (f"Found {total_files} disc image(s) in that folder, but couldn't determine "
+                   f"a serial for any of them (filename has no serial, and reading SYSTEM.CNF "
+                   f"didn't work for .bin/.chd/.cso -- only plain .iso is supported for that).")
+        else:
+            msg = f"Found {total_files} disc image(s) in that folder, added {added} new to your library."
+        QMessageBox.information(self, "Scan Complete", msg)
 
     # ---- manual add ----
     def _add_game_manually(self):
