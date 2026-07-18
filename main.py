@@ -6080,8 +6080,10 @@ class LibraryView(QWidget):
         self._workers: List[QThread] = []
         self.games: Dict[str, GameEntry] = {}
         self._cover_generation = 0
+        self.view_mode = 'list'
 
         self._build_ui()
+        self.btn_view_list.setChecked(True)
         self._load_library()
         self._refresh_list()
         self._prefetch_missing_covers()
@@ -6108,6 +6110,23 @@ class LibraryView(QWidget):
         toolbar.addWidget(self.btn_scan)
         toolbar.addWidget(self.btn_add)
         self.btn_add.clicked.connect(self._add_game_manually)
+        toolbar.addStretch(1)
+        self.btn_view_list = QToolButton()
+        self.btn_view_list.setIcon(icons.tab_icon("view_list"))
+        self.btn_view_list.setToolTip("List view")
+        self.btn_view_list.setObjectName(theme.OBJ_VIEW_TOGGLE_BUTTON)
+        self.btn_view_list.setCheckable(True)
+        self.btn_view_list.setFixedSize(30, 30)
+        self.btn_view_grid = QToolButton()
+        self.btn_view_grid.setIcon(icons.tab_icon("view_grid"))
+        self.btn_view_grid.setToolTip("Grid view")
+        self.btn_view_grid.setObjectName(theme.OBJ_VIEW_TOGGLE_BUTTON)
+        self.btn_view_grid.setCheckable(True)
+        self.btn_view_grid.setFixedSize(30, 30)
+        self.btn_view_list.clicked.connect(lambda: self._set_view_mode('list'))
+        self.btn_view_grid.clicked.connect(lambda: self._set_view_mode('grid'))
+        toolbar.addWidget(self.btn_view_list)
+        toolbar.addWidget(self.btn_view_grid)
         left.addLayout(toolbar)
 
         self.search_box = QLineEdit()
@@ -6128,11 +6147,15 @@ class LibraryView(QWidget):
         self.list_widget.itemSelectionChanged.connect(self._on_selection_changed)
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._list_context_menu)
+        self.list_widget.itemDoubleClicked.connect(lambda _item: self._sync_selected())
         left.addWidget(self.list_widget, 1)
 
+        self.left_widget = left_widget
+        self._root_layout = root
         root.addWidget(left_widget)
 
         right_widget = QWidget()
+        self.right_widget = right_widget
         right = QVBoxLayout(right_widget)
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(theme.SPACING_MD)
@@ -6230,6 +6253,37 @@ class LibraryView(QWidget):
             logger.warning(f"[LibraryView] Failed to save library: {e}")
 
     # ---- list ----
+    def _set_view_mode(self, mode: str):
+        """Switch between the compact list (icon + two lines of text) and a
+        PCSX2-style cover-art grid. Grid mode widens the library pane at the
+        expense of the detail panel since it needs the room; list mode
+        restores the normal narrow-sidebar layout."""
+        self.view_mode = mode
+        self.btn_view_list.setChecked(mode == 'list')
+        self.btn_view_grid.setChecked(mode == 'grid')
+        if mode == 'grid':
+            self.left_widget.setMinimumWidth(600)
+            self.left_widget.setMaximumWidth(16777215)
+            self._root_layout.setStretchFactor(self.left_widget, 3)
+            self._root_layout.setStretchFactor(self.right_widget, 1)
+            self.list_widget.setViewMode(QListWidget.IconMode)
+            self.list_widget.setMovement(QListWidget.Static)
+            self.list_widget.setResizeMode(QListWidget.Adjust)
+            self.list_widget.setWordWrap(True)
+            self.list_widget.setSpacing(theme.SPACING_SM)
+            self.list_widget.setIconSize(QSize(theme.GRID_COVER_WIDTH, theme.GRID_COVER_HEIGHT))
+            self.list_widget.setGridSize(QSize(theme.GRID_TILE_WIDTH, theme.GRID_TILE_HEIGHT))
+        else:
+            self.left_widget.setMinimumWidth(300)
+            self.left_widget.setMaximumWidth(380)
+            self._root_layout.setStretchFactor(self.left_widget, 0)
+            self._root_layout.setStretchFactor(self.right_widget, 1)
+            self.list_widget.setViewMode(QListWidget.ListMode)
+            self.list_widget.setMovement(QListWidget.Static)
+            self.list_widget.setSpacing(2)
+            self.list_widget.setGridSize(QSize())
+        self._refresh_list(self.search_box.text())
+
     def _refresh_list(self, filter_text: str = ""):
         self.list_widget.clear()
         ft = (filter_text or "").strip().upper()
@@ -6241,10 +6295,24 @@ class LibraryView(QWidget):
             item = QListWidgetItem()
             item.setData(Qt.UserRole, g.serial)
             cover_path = cover_cache_path(g.serial, self.COVER_CACHE_DIR)
-            row = GameListItemWidget(g.title, g.serial, cover_path if os.path.isfile(cover_path) else None)
-            item.setSizeHint(row.sizeHint())
-            self.list_widget.addItem(item)
-            self.list_widget.setItemWidget(item, row)
+            has_cover = os.path.isfile(cover_path)
+            if self.view_mode == 'grid':
+                if has_cover:
+                    pm = QPixmap(cover_path)
+                    icon_pm = scale_and_crop_pixmap(pm, theme.GRID_COVER_WIDTH, theme.GRID_COVER_HEIGHT) if pm and not pm.isNull() else None
+                else:
+                    icon_pm = scale_and_crop_pixmap(create_library_cover_placeholder(g.serial), theme.GRID_COVER_WIDTH, theme.GRID_COVER_HEIGHT)
+                if icon_pm:
+                    item.setIcon(QIcon(icon_pm))
+                item.setText(g.title or g.serial)
+                item.setTextAlignment(Qt.AlignHCenter)
+                item.setToolTip(f"{g.title}\n{g.serial}")
+                self.list_widget.addItem(item)
+            else:
+                row = GameListItemWidget(g.title, g.serial, cover_path if has_cover else None)
+                item.setSizeHint(row.sizeHint())
+                self.list_widget.addItem(item)
+                self.list_widget.setItemWidget(item, row)
 
     def _selected_game(self) -> Optional[GameEntry]:
         items = self.list_widget.selectedItems()
@@ -6259,10 +6327,15 @@ class LibraryView(QWidget):
         game = self.games.get(item.data(Qt.UserRole))
         if not game:
             return
+        self.list_widget.setCurrentItem(item)
         menu = QMenu(self)
+        sync_act = menu.addAction("Sync This Game")
+        menu.addSeparator()
         remove_act = menu.addAction("Remove from Library")
         chosen = menu.exec_(self.list_widget.mapToGlobal(pos))
-        if chosen == remove_act:
+        if chosen == sync_act:
+            self._sync_selected()
+        elif chosen == remove_act:
             reply = QMessageBox.question(
                 self, "Remove Game",
                 f"Remove \"{game.title or game.serial}\" from your library?\n\n"
@@ -6425,9 +6498,14 @@ class LibraryView(QWidget):
         for i in range(self.list_widget.count()):
             item = self.list_widget.item(i)
             if item.data(Qt.UserRole) == serial:
-                row = self.list_widget.itemWidget(item)
-                if isinstance(row, GameListItemWidget):
-                    row.set_cover(cache_path)
+                if self.view_mode == 'grid':
+                    pm = QPixmap(cache_path)
+                    if pm and not pm.isNull():
+                        item.setIcon(QIcon(scale_and_crop_pixmap(pm, theme.GRID_COVER_WIDTH, theme.GRID_COVER_HEIGHT)))
+                else:
+                    row = self.list_widget.itemWidget(item)
+                    if isinstance(row, GameListItemWidget):
+                        row.set_cover(cache_path)
                 break
         game = self._selected_game()
         if game and game.serial == serial:

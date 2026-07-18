@@ -150,6 +150,25 @@ def _menu_pixmap() -> QPixmap:
     return pm
 
 
+def _view_list_pixmap() -> QPixmap:
+    pm = _blank_pixmap()
+    p = _painter(pm)
+    for y in (6, 11, 16):
+        p.drawLine(QPointF(4, y), QPointF(6, y))
+        p.drawLine(QPointF(9, y), QPointF(18, y))
+    p.end()
+    return pm
+
+
+def _view_grid_pixmap() -> QPixmap:
+    pm = _blank_pixmap()
+    p = _painter(pm)
+    for x, y in ((4, 4), (12.5, 4), (4, 12.5), (12.5, 12.5)):
+        p.drawRoundedRect(QRectF(x, y, 6.5, 6.5), 1, 1)
+    p.end()
+    return pm
+
+
 def _disc_pixmap() -> QPixmap:
     pm = _blank_pixmap()
     p = _painter(pm)
@@ -172,6 +191,8 @@ _BUILDERS = {
     "sync": _sync_pixmap,
     "menu": _menu_pixmap,
     "disc": _disc_pixmap,
+    "view_list": _view_list_pixmap,
+    "view_grid": _view_grid_pixmap,
 }
 
 
