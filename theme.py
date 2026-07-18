@@ -23,6 +23,7 @@ COLOR_TEXT_DISABLED = "#67676d"
 COLOR_SUCCESS = "#2fb170"
 COLOR_SUCCESS_HOVER = "#38c880"
 COLOR_DANGER = "#e5484d"
+COLOR_WARNING = "#d9a441"
 
 # --- Spacing tokens (px) ---
 SPACING_XS = 4
@@ -49,8 +50,20 @@ OBJ_TITLE_BAR_LABEL = "titleBarLabel"
 OBJ_TITLE_BAR_BUTTON = "titleBarButton"
 OBJ_TITLE_BAR_CLOSE_BUTTON = "titleBarCloseButton"
 
+OBJ_STATUS_SUCCESS = "statusSuccess"
+OBJ_STATUS_WARNING = "statusWarning"
+OBJ_STATUS_ERROR = "statusError"
+
+OBJ_COVER_FRAME = "coverFrame"
+OBJ_HERO_TITLE = "heroTitle"
+OBJ_GAME_ROW = "gameRow"
+OBJ_GAME_ROW_TITLE = "gameRowTitle"
+OBJ_SIDEBAR = "sidebar"
+
 TITLE_BAR_HEIGHT = 38
 RESIZE_MARGIN = 6
+COVER_WIDTH = 200
+COVER_HEIGHT = 266
 
 DARK_QSS = f"""
     QMainWindow {{
@@ -281,5 +294,38 @@ DARK_QSS = f"""
     }}
     QToolButton#{OBJ_TITLE_BAR_CLOSE_BUTTON}:hover {{
         background-color: {COLOR_DANGER};
+    }}
+    QLabel#{OBJ_STATUS_SUCCESS} {{
+        color: {COLOR_SUCCESS};
+        font-weight: 600;
+    }}
+    QLabel#{OBJ_STATUS_WARNING} {{
+        color: {COLOR_WARNING};
+        font-weight: 600;
+    }}
+    QLabel#{OBJ_STATUS_ERROR} {{
+        color: {COLOR_DANGER};
+        font-weight: 600;
+    }}
+    QLabel#{OBJ_COVER_FRAME} {{
+        background-color: {COLOR_SURFACE};
+        border: 1px solid {COLOR_BORDER_STRONG};
+        border-radius: {RADIUS_LG}px;
+    }}
+    QLabel#{OBJ_HERO_TITLE} {{
+        color: {COLOR_TEXT};
+        font-weight: 700;
+    }}
+    QWidget#{OBJ_SIDEBAR} {{
+        background-color: {COLOR_SURFACE};
+        border-radius: {RADIUS_LG}px;
+    }}
+    QWidget#{OBJ_GAME_ROW} {{
+        background-color: transparent;
+        border-radius: {RADIUS_MD}px;
+    }}
+    QLabel#{OBJ_GAME_ROW_TITLE} {{
+        color: {COLOR_TEXT};
+        font-weight: 600;
     }}
 """

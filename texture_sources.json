@@ -1,22 +1,30 @@
 {
-  "SLUS-20554": {
-    "name": "Metal Gear Solid 2: Substance - HD UI",
-    "github_repo": "NathanHigley/MGS2-HD-UI",
-    "asset_pattern": "MGS2-HD-UI.zip"
-  },
-  "SLUS-21812": {
-    "name": "Speed Racer HD Texture Pack",
-    "github_repo": "BMT619/Speed-Racer-PCSX2-HD-Texture-Pack",
-    "asset_pattern": "SLUS-21812.zip"
-  },
-  "SLUS-21215": {
-    "name": "The Warriors HD Texture Pack",
-    "github_repo": "eternights/XboxTexturePack.TheWarriors",
-    "asset_pattern": "XboxTexturePack.TheWarriors.zip"
-  },
-  "SLUS-21590": {
-    "name": "GTA: Vice City Stories Texture Pack",
-    "github_repo": "ASI-Factory/GTA-VCS-Texture-Pack-PS2",
-    "asset_pattern": "GTA-VCS-Texure-Pack.zip"
-  }
+  "SLUS-20554": [
+    {
+      "name": "Metal Gear Solid 2: Substance - HD UI",
+      "github_repo": "NathanHigley/MGS2-HD-UI",
+      "asset_pattern": "MGS2-HD-UI.zip"
+    }
+  ],
+  "SLUS-21812": [
+    {
+      "name": "Speed Racer HD Texture Pack",
+      "github_repo": "BMT619/Speed-Racer-PCSX2-HD-Texture-Pack",
+      "asset_pattern": "SLUS-21812.zip"
+    }
+  ],
+  "SLUS-21215": [
+    {
+      "name": "The Warriors HD Texture Pack",
+      "github_repo": "eternights/XboxTexturePack.TheWarriors",
+      "asset_pattern": "XboxTexturePack.TheWarriors.zip"
+    }
+  ],
+  "SLUS-21590": [
+    {
+      "name": "GTA: Vice City Stories Texture Pack",
+      "github_repo": "ASI-Factory/GTA-VCS-Texture-Pack-PS2",
+      "asset_pattern": "GTA-VCS-Texure-Pack.zip"
+    }
+  ]
 }

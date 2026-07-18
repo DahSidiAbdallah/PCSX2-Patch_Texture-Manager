@@ -22,7 +22,7 @@ from collections import deque
 import time
 import logging
 
-from PySide6.QtCore import Qt, QThread, Signal, QSize, QSettings, QTimer, QCoreApplication, QPoint
+from PySide6.QtCore import Qt, QThread, Signal, QSize, QSettings, QTimer, QCoreApplication, QPoint, QPointF, QRectF
 import sys
 from PySide6.QtGui import QIcon, QPixmap, QDragEnterEvent, QDropEvent, QAction, QPainter, QColor, QPen
 import concurrent.futures
@@ -375,6 +375,32 @@ def norm_serial_key(s: str) -> str:
     return (s or "").upper().replace("-", "").replace("_", "").replace(" ", "")
 
 
+_COVERS_REPO_BASE = "https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/default"
+
+
+def build_cover_candidates(serial: str) -> List[str]:
+    """Build candidate cover-art URLs to probe for a serial (normalized, original,
+    no-separators, lowercase variants), against the public xlenore/ps2-covers index."""
+    raw = (serial or '').strip()
+    sk = norm_serial_key(raw)
+    variants = []
+    if sk:
+        variants.append(sk.upper())
+    if raw:
+        variants.append(raw.upper())
+    variants.append(raw.replace('-', '').replace('_', '').replace(' ', '').upper())
+    variants.append(raw.replace('-', '').replace('_', '').replace(' ', '').lower())
+    variants.append(sk.lower())
+    seen = set()
+    uniq = []
+    for v in variants:
+        if not v or v in seen:
+            continue
+        seen.add(v)
+        uniq.append(v)
+    return [f"{_COVERS_REPO_BASE}/{v}.jpg" for v in uniq]
+
+
 def create_cover_placeholder(serial: str = "", size: int = 420) -> QPixmap:
     """Create a placeholder pixmap for when no cover is available."""
     placeholder = QPixmap(size, size)
@@ -424,6 +450,35 @@ def create_cover_placeholder(serial: str = "", size: int = 420) -> QPixmap:
         logger.error(f"[Placeholder] Failed to create placeholder: {e}")
     
     return placeholder
+
+
+def create_library_cover_placeholder(serial: str = "") -> QPixmap:
+    """Portrait, dark-themed placeholder cover for LibraryView's detail panel --
+    distinct from create_cover_placeholder()'s square light-gray one (used by the
+    older Cheats/Textures tab previews), which would look out of place against
+    the dark bordered cover frame here."""
+    w, h = theme.COVER_WIDTH, theme.COVER_HEIGHT
+    pm = QPixmap(w, h)
+    pm.fill(QColor(theme.COLOR_SURFACE_ALT))
+    try:
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor(theme.COLOR_BORDER_STRONG))
+        pen.setWidthF(1.5)
+        p.setPen(pen)
+        cx, cy = w / 2, h / 2 - 16
+        p.drawEllipse(QPointF(cx, cy), 30, 30)
+        p.drawEllipse(QPointF(cx, cy), 9, 9)
+        p.setPen(QColor(theme.COLOR_TEXT_MUTED))
+        font = p.font()
+        font.setPointSize(9)
+        p.setFont(font)
+        p.drawText(QRectF(10, cy + 42, w - 20, 50), Qt.AlignHCenter | Qt.TextWordWrap,
+                   serial or "No cover art")
+        p.end()
+    except Exception as e:
+        logger.debug(f"[create_library_cover_placeholder] {e}")
+    return pm
 
 
 def bundled_lookup_title(serial: str) -> Optional[str]:
@@ -604,18 +659,25 @@ def _load_texture_manifest() -> dict:
     return _TEXTURE_MANIFEST_CACHE
 
 
-def resolve_texture_pack_url(serial: str) -> Optional[Tuple[str, str, str]]:
-    """Look up `serial` in the curated texture-pack manifest and resolve the
-    current download URL for its GitHub release asset via GitHub's public
-    releases API (no auth needed for public repos within rate limits).
-    Returns (display_name, repo, download_url), or None if the serial isn't
-    in the manifest, there's no matching release/asset, or `requests` isn't
-    available.
-    """
-    if requests is None or not serial:
-        return None
-    entry = _load_texture_manifest().get(serial.upper())
-    if not entry:
+def get_texture_pack_options(serial: str) -> List[dict]:
+    """Return the curated manifest entries for `serial` (may be empty, may have
+    more than one -- some games have multiple community texture packs)."""
+    if not serial:
+        return []
+    entries = _load_texture_manifest().get(serial.upper())
+    if not entries:
+        return []
+    if isinstance(entries, dict):
+        entries = [entries]
+    return entries
+
+
+def resolve_texture_release_asset(entry: dict) -> Optional[Tuple[str, str, str]]:
+    """Resolve one manifest entry's current download URL for its GitHub release
+    asset via GitHub's public releases API (no auth needed for public repos
+    within rate limits). Returns (display_name, repo, download_url), or None if
+    there's no matching release/asset or `requests` isn't available."""
+    if requests is None or not entry:
         return None
     repo = entry.get('github_repo')
     asset_pattern = (entry.get('asset_pattern') or '').lower()
@@ -636,6 +698,16 @@ def resolve_texture_pack_url(serial: str) -> Optional[Tuple[str, str, str]]:
     except Exception as e:
         logger.warning(f"[textures] Failed to resolve GitHub release for {repo}: {e}")
     return None
+
+
+def resolve_texture_pack_url(serial: str) -> Optional[Tuple[str, str, str]]:
+    """Resolve the first/default curated texture-pack option for `serial`.
+    Convenience wrapper around get_texture_pack_options()/resolve_texture_release_asset()
+    for callers that don't need to offer a choice between multiple packs."""
+    options = get_texture_pack_options(serial)
+    if not options:
+        return None
+    return resolve_texture_release_asset(options[0])
 
 
 def _score_title_candidate(text: str, html: Optional[str] = None) -> int:
@@ -5568,13 +5640,43 @@ def _dict_to_entry(d: dict) -> GameEntry:
     )
 
 
+class GameListItemWidget(QWidget):
+    """Row widget for the library list: a small disc icon + title + serial,
+    used via QListWidget.setItemWidget() instead of plain single-line text."""
+
+    def __init__(self, title: str, serial: str):
+        super().__init__()
+        self.setObjectName(theme.OBJ_GAME_ROW)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(theme.SPACING_SM, theme.SPACING_XS, theme.SPACING_SM, theme.SPACING_XS)
+        lay.setSpacing(theme.SPACING_SM)
+
+        icon_label = QLabel()
+        icon_label.setPixmap(icons.tab_icon("disc").pixmap(20, 20))
+        icon_label.setFixedSize(20, 20)
+        lay.addWidget(icon_label)
+
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(0)
+        title_label = QLabel(title or serial)
+        title_label.setObjectName(theme.OBJ_GAME_ROW_TITLE)
+        serial_label = QLabel(serial)
+        serial_label.setObjectName(theme.OBJ_MUTED_LABEL)
+        text_col.addWidget(title_label)
+        text_col.addWidget(serial_label)
+        lay.addLayout(text_col, 1)
+
+
 class LibraryView(QWidget):
     """The main screen: your scanned game library on the left, and on the
-    right a one-click "Sync" for the selected game's cheats and textures.
-    Replaces the old Cheats/Textures/Bulk Scanner tabs as the primary flow.
+    right a cover-art detail panel with a one-click "Sync" for the selected
+    game's cheats and textures. Replaces the old Cheats/Textures/Bulk Scanner
+    tabs as the primary flow.
     """
 
     LIBRARY_STORE = os.path.join(os.path.expanduser("~"), ".pcsx2_manager_library.json")
+    COVER_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".pcsx2_manager_thumbs")
 
     def __init__(self, parent: 'MainWindow'):
         super().__init__()
@@ -5582,6 +5684,7 @@ class LibraryView(QWidget):
         self._shutting_down = False
         self._workers: List[QThread] = []
         self.games: Dict[str, GameEntry] = {}
+        self._cover_generation = 0
 
         self._build_ui()
         self._load_library()
@@ -5594,13 +5697,15 @@ class LibraryView(QWidget):
         root.setSpacing(theme.SPACING_LG)
 
         left_widget = QWidget()
-        left_widget.setMinimumWidth(280)
+        left_widget.setObjectName(theme.OBJ_SIDEBAR)
+        left_widget.setMinimumWidth(300)
         left_widget.setMaximumWidth(380)
         left = QVBoxLayout(left_widget)
-        left.setContentsMargins(0, 0, 0, 0)
+        left.setContentsMargins(theme.SPACING_MD, theme.SPACING_MD, theme.SPACING_MD, theme.SPACING_MD)
         left.setSpacing(theme.SPACING_SM)
 
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(theme.SPACING_SM)
         self.btn_scan = QPushButton("Scan Folder…")
         self.btn_scan.clicked.connect(self._scan_folder)
         self.btn_add = QPushButton("Add Game…")
@@ -5614,11 +5719,16 @@ class LibraryView(QWidget):
         self.search_box.textChanged.connect(self._refresh_list)
         left.addWidget(self.search_box)
 
+        self.library_count_label = QLabel("")
+        self.library_count_label.setObjectName(theme.OBJ_MUTED_LABEL)
+        left.addWidget(self.library_count_label)
+
         self.scan_progress = QProgressBar()
         self.scan_progress.setVisible(False)
         left.addWidget(self.scan_progress)
 
         self.list_widget = QListWidget()
+        self.list_widget.setSpacing(2)
         self.list_widget.itemSelectionChanged.connect(self._on_selection_changed)
         left.addWidget(self.list_widget, 1)
 
@@ -5627,18 +5737,35 @@ class LibraryView(QWidget):
         right_widget = QWidget()
         right = QVBoxLayout(right_widget)
         right.setContentsMargins(0, 0, 0, 0)
-        right.setSpacing(theme.SPACING_SM)
+        right.setSpacing(theme.SPACING_MD)
+
+        hero = QHBoxLayout()
+        hero.setSpacing(theme.SPACING_LG)
+
+        self.cover_label = QLabel()
+        self.cover_label.setObjectName(theme.OBJ_COVER_FRAME)
+        self.cover_label.setFixedSize(theme.COVER_WIDTH, theme.COVER_HEIGHT)
+        self.cover_label.setAlignment(Qt.AlignCenter)
+        self.cover_label.setScaledContents(False)
+        hero.addWidget(self.cover_label, 0, Qt.AlignTop)
+
+        hero_text = QVBoxLayout()
+        hero_text.setSpacing(theme.SPACING_XS)
+        hero_text.addStretch(1)
 
         self.detail_title = QLabel("Select a game from your library")
+        self.detail_title.setObjectName(theme.OBJ_HERO_TITLE)
+        self.detail_title.setWordWrap(True)
         f = self.detail_title.font()
-        f.setPointSize(f.pointSize() + 4)
-        f.setBold(True)
+        f.setPointSize(f.pointSize() + 8)
         self.detail_title.setFont(f)
-        right.addWidget(self.detail_title)
+        hero_text.addWidget(self.detail_title)
 
         self.detail_subtitle = QLabel("Scan a folder or add a game to get started.")
         self.detail_subtitle.setObjectName(theme.OBJ_MUTED_LABEL)
-        right.addWidget(self.detail_subtitle)
+        hero_text.addWidget(self.detail_subtitle)
+
+        hero_text.addSpacing(theme.SPACING_MD)
 
         status_grp = QGroupBox("Status")
         status_form = QFormLayout(status_grp)
@@ -5646,22 +5773,39 @@ class LibraryView(QWidget):
         self.textures_status_label = QLabel("—")
         status_form.addRow("Cheats:", self.cheats_status_label)
         status_form.addRow("Textures:", self.textures_status_label)
-        right.addWidget(status_grp)
+        hero_text.addWidget(status_grp)
+
+        texture_row = QHBoxLayout()
+        texture_row.setSpacing(theme.SPACING_SM)
+        texture_label = QLabel("Texture pack:")
+        texture_label.setObjectName(theme.OBJ_MUTED_LABEL)
+        self.texture_pack_combo = QComboBox()
+        texture_row.addWidget(texture_label)
+        texture_row.addWidget(self.texture_pack_combo, 1)
+        self.texture_pack_row = QWidget()
+        self.texture_pack_row.setLayout(texture_row)
+        self.texture_pack_row.setVisible(False)
+        hero_text.addWidget(self.texture_pack_row)
 
         self.btn_sync = QPushButton("Sync This Game")
         self.btn_sync.setObjectName(theme.OBJ_SUCCESS_BUTTON)
-        self.btn_sync.setMinimumHeight(40)
+        self.btn_sync.setMinimumHeight(42)
         self.btn_sync.setEnabled(False)
         self.btn_sync.clicked.connect(self._sync_selected)
-        right.addWidget(self.btn_sync)
+        hero_text.addWidget(self.btn_sync)
 
         self.result_label = QLabel("")
         self.result_label.setWordWrap(True)
         self.result_label.setObjectName(theme.OBJ_MUTED_LABEL)
-        right.addWidget(self.result_label)
+        hero_text.addWidget(self.result_label)
 
+        hero_text.addStretch(2)
+        hero.addLayout(hero_text, 1)
+        right.addLayout(hero)
         right.addStretch(1)
         root.addWidget(right_widget, 1)
+
+        self._set_cover_pixmap(create_library_cover_placeholder(""))
 
     # ---- persistence ----
     def _load_library(self):
@@ -5688,13 +5832,17 @@ class LibraryView(QWidget):
     def _refresh_list(self, filter_text: str = ""):
         self.list_widget.clear()
         ft = (filter_text or "").strip().upper()
+        self.library_count_label.setText(f"{len(self.games)} game(s) in your library" if self.games else "")
         for serial in sorted(self.games.keys(), key=lambda s: (self.games[s].title or s).upper()):
             g = self.games[serial]
             if ft and ft not in (g.title or "").upper() and ft not in g.serial.upper():
                 continue
-            item = QListWidgetItem(f"{g.title}\n{g.serial}")
+            item = QListWidgetItem()
             item.setData(Qt.UserRole, g.serial)
+            row = GameListItemWidget(g.title, g.serial)
+            item.setSizeHint(row.sizeHint())
             self.list_widget.addItem(item)
+            self.list_widget.setItemWidget(item, row)
 
     def _selected_game(self) -> Optional[GameEntry]:
         items = self.list_widget.selectedItems()
@@ -5702,27 +5850,96 @@ class LibraryView(QWidget):
             return None
         return self.games.get(items[0].data(Qt.UserRole))
 
+    def _set_status(self, label: QLabel, text: str, kind: str = "muted"):
+        obj_names = {
+            "success": theme.OBJ_STATUS_SUCCESS,
+            "warning": theme.OBJ_STATUS_WARNING,
+            "error": theme.OBJ_STATUS_ERROR,
+        }
+        label.setText(text)
+        label.setObjectName(obj_names.get(kind, theme.OBJ_MUTED_LABEL))
+        label.style().unpolish(label)
+        label.style().polish(label)
+
     def _on_selection_changed(self):
         game = self._selected_game()
         if not game:
             self.btn_sync.setEnabled(False)
             self.detail_title.setText("Select a game from your library")
             self.detail_subtitle.setText("Scan a folder or add a game to get started.")
-            self.cheats_status_label.setText("—")
-            self.textures_status_label.setText("—")
+            self._set_status(self.cheats_status_label, "—")
+            self._set_status(self.textures_status_label, "—")
             self.result_label.setText("")
+            self.texture_pack_row.setVisible(False)
+            self._set_cover_pixmap(create_library_cover_placeholder(""))
             self.parent.state.current_game = None
             self.parent.current_game_changed.emit(None)
             return
         self.detail_title.setText(game.title or game.serial)
         subtitle = game.serial + (f"   ·   CRC {game.crc}" if game.crc else "")
         self.detail_subtitle.setText(subtitle)
-        self.cheats_status_label.setText("Not synced yet")
-        self.textures_status_label.setText("Not synced yet")
+        self._set_status(self.cheats_status_label, "Not synced yet")
+        self._set_status(self.textures_status_label, "Not synced yet")
         self.result_label.setText("")
         self.btn_sync.setEnabled(True)
+
+        self.texture_pack_combo.clear()
+        options = get_texture_pack_options(game.serial)
+        for opt in options:
+            self.texture_pack_combo.addItem(opt.get('name') or opt.get('github_repo') or 'Texture pack', opt)
+        self.texture_pack_row.setVisible(bool(options))
+
+        self._load_cover(game)
+
         self.parent.state.current_game = game
         self.parent.current_game_changed.emit(game)
+
+    # ---- cover art ----
+    def _set_cover_pixmap(self, pm: QPixmap):
+        if not pm or pm.isNull():
+            self.cover_label.clear()
+            return
+        w, h = theme.COVER_WIDTH, theme.COVER_HEIGHT
+        scaled = pm.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        if scaled.width() > w or scaled.height() > h:
+            x = max(0, (scaled.width() - w) // 2)
+            y = max(0, (scaled.height() - h) // 2)
+            scaled = scaled.copy(x, y, w, h)
+        self.cover_label.setPixmap(scaled)
+
+    def _load_cover(self, game: GameEntry):
+        self._cover_generation += 1
+        gen = self._cover_generation
+        serial_key = norm_serial_key(game.serial)
+
+        try:
+            os.makedirs(self.COVER_CACHE_DIR, exist_ok=True)
+        except Exception:
+            pass
+        cache_path = os.path.join(self.COVER_CACHE_DIR, f"cover_{serial_key}.jpg")
+
+        if os.path.isfile(cache_path):
+            pm = QPixmap(cache_path)
+            if pm and not pm.isNull():
+                self._set_cover_pixmap(pm)
+                return
+
+        self._set_cover_pixmap(create_library_cover_placeholder(game.serial))
+        candidates = build_cover_candidates(game.serial)
+        if not candidates:
+            return
+
+        worker = CoverFetchWorker(candidates, cache_path, parent=self)
+
+        def _on_fetched(path):
+            if gen != self._cover_generation:
+                return  # selection moved on since this fetch started
+            pm = QPixmap(path)
+            if pm and not pm.isNull():
+                self._set_cover_pixmap(pm)
+
+        worker.fetched.connect(_on_fetched)
+        self._start_worker(worker)
 
     # ---- scanning ----
     def _scan_folder(self):
@@ -5823,13 +6040,13 @@ class LibraryView(QWidget):
                 if crc:
                     game.crc = crc
                 if self._cheats_already_installed(cheats_dir, crc):
-                    self.cheats_status_label.setText("Already installed (left unchanged)")
+                    self._set_status(self.cheats_status_label, "Already installed", "warning")
                     return "already installed -- left your existing .pnach unchanged"
                 if not cheats:
-                    self.cheats_status_label.setText("No codes in local database")
+                    self._set_status(self.cheats_status_label, "No codes in local database")
                     return "no codes in the local database"
                 write_cheats_pnach(title, game.serial, crc, cheats, cheats_dir)
-                self.cheats_status_label.setText(f"{len(cheats)} code(s) installed (local database)")
+                self._set_status(self.cheats_status_label, f"{len(cheats)} code(s) installed", "success")
                 self._save_library()
                 return f"installed {len(cheats)} code(s) from the local database"
 
@@ -5841,29 +6058,29 @@ class LibraryView(QWidget):
                 for entry in results if entry.get('codes')
             ]
             if not codes:
-                self.cheats_status_label.setText("Not found")
+                self._set_status(self.cheats_status_label, "Not found")
                 return "no cheats found (local database or online)"
             crc = game.crc or ''
             if not crc:
-                self.cheats_status_label.setText("Found online, but no CRC available")
+                self._set_status(self.cheats_status_label, "Found online, but no CRC available", "warning")
                 return "found online, but couldn't determine a CRC to install with"
             if self._cheats_already_installed(cheats_dir, crc):
-                self.cheats_status_label.setText("Already installed (left unchanged)")
+                self._set_status(self.cheats_status_label, "Already installed", "warning")
                 return "already installed -- left your existing .pnach unchanged"
             write_cheats_pnach(game.title, game.serial, crc, codes, cheats_dir)
-            self.cheats_status_label.setText(f"{len(codes)} code(s) installed (online)")
+            self._set_status(self.cheats_status_label, f"{len(codes)} code(s) installed", "success")
             return f"installed {len(codes)} code(s) from online sources"
         except Exception as e:
-            self.cheats_status_label.setText("Error")
+            self._set_status(self.cheats_status_label, "Error", "error")
             logger.error(f"[LibraryView] Cheats sync failed for {game.serial}: {e}")
             return f"error -- {e}"
 
     def _sync_textures(self, game: GameEntry, textures_dir: str) -> str:
         if not textures_dir or not os.path.isdir(textures_dir):
-            self.textures_status_label.setText("Textures folder not set")
+            self._set_status(self.textures_status_label, "Textures folder not set", "warning")
             return "PCSX2 textures folder not set"
         if requests is None:
-            self.textures_status_label.setText("Not found")
+            self._set_status(self.textures_status_label, "Not found")
             return "no texture-pack lookup available (requests not installed)"
 
         # perform_pack_installs() unconditionally replaces an existing target
@@ -5871,13 +6088,17 @@ class LibraryView(QWidget):
         # a one-click sync must never silently wipe an already-installed pack.
         existing_dir = os.path.join(textures_dir, game.serial)
         if os.path.isdir(existing_dir) and os.listdir(existing_dir):
-            self.textures_status_label.setText("Already installed (left unchanged)")
+            self._set_status(self.textures_status_label, "Already installed", "warning")
             return "already installed -- left your existing pack unchanged"
 
         try:
-            resolved = resolve_texture_pack_url(game.serial)
+            chosen_entry = self.texture_pack_combo.currentData() if self.texture_pack_combo.count() else None
+            if chosen_entry:
+                resolved = resolve_texture_release_asset(chosen_entry)
+            else:
+                resolved = resolve_texture_pack_url(game.serial)
             if not resolved or not resolved[2]:
-                self.textures_status_label.setText("Not found")
+                self._set_status(self.textures_status_label, "Not found")
                 return "no pack found in the community index"
             display_name, repo, download_url = resolved
 
@@ -5899,13 +6120,13 @@ class LibraryView(QWidget):
                 pass
 
             if installed:
-                self.textures_status_label.setText(f"Installed ({display_name})")
+                self._set_status(self.textures_status_label, f"Installed ({display_name})", "success")
                 return f"installed '{display_name}' from {repo}"
             msg = failures[0][2] if failures else "install failed"
-            self.textures_status_label.setText("Install failed")
+            self._set_status(self.textures_status_label, "Install failed", "error")
             return f"found a pack but install failed -- {msg}"
         except Exception as e:
-            self.textures_status_label.setText("Error")
+            self._set_status(self.textures_status_label, "Error", "error")
             logger.error(f"[LibraryView] Textures sync failed for {game.serial}: {e}")
             return f"error -- {e}"
 

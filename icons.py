@@ -150,6 +150,15 @@ def _menu_pixmap() -> QPixmap:
     return pm
 
 
+def _disc_pixmap() -> QPixmap:
+    pm = _blank_pixmap()
+    p = _painter(pm)
+    p.drawEllipse(QPointF(11, 11), 8, 8)
+    p.drawEllipse(QPointF(11, 11), 2.4, 2.4)
+    p.end()
+    return pm
+
+
 _BUILDERS = {
     "cheats": _cheats_pixmap,
     "textures": _textures_pixmap,
@@ -162,6 +171,7 @@ _BUILDERS = {
     "add": _add_pixmap,
     "sync": _sync_pixmap,
     "menu": _menu_pixmap,
+    "disc": _disc_pixmap,
 }
 
 
