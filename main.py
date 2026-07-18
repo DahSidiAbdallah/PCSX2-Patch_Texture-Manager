@@ -731,6 +731,69 @@ def write_cheats_pnach(title: str, serial: str, crc: str, cheats: List[dict], ch
     return filepath
 
 
+# ---- Community GitHub-hosted .pnach collections (additional cheat source) ----
+# CRC-keyed collections of real .pnach files (PCSX2's own format), fetched
+# directly via GitHub's raw content CDN -- no scraping, no ToS concerns,
+# just reading public files. Verified against the repo directly (see the
+# commit introducing this) rather than assumed.
+_GITHUB_PNACH_COLLECTIONS = [
+    "xs1l3n7x/pcsx2_cheats_collection/main/cheats",
+]
+
+
+def parse_pnach_cheats(content: str) -> List[dict]:
+    """Parse a raw .pnach file's content into [{'name','description','codes'}, ...]
+    using PCSX2's real [Group Name] bracket-header syntax (see write_cheats_pnach()
+    for the write side of this same format). Patch lines appearing before any
+    bracket header (old-format files) are grouped under one generic entry."""
+    cheats: List[dict] = []
+    current: Optional[dict] = None
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('//'):
+            continue
+        m = re.match(r'^\[(.+)\]$', line)
+        if m:
+            if current and current['codes']:
+                cheats.append(current)
+            current = {'name': m.group(1).strip(), 'description': '', 'codes': []}
+            continue
+        low = line.lower()
+        if low.startswith('gametitle=') or low.startswith('author='):
+            continue
+        if low.startswith('description='):
+            if current is not None:
+                current['description'] = line.split('=', 1)[1].strip()
+            continue
+        if low.startswith('patch='):
+            if current is None:
+                current = {'name': 'Unlabeled Codes', 'description': '', 'codes': []}
+            current['codes'].append(line)
+    if current and current['codes']:
+        cheats.append(current)
+    return cheats
+
+
+def fetch_github_pnach_cheats(crc: str) -> List[dict]:
+    """Try fetching a community-maintained .pnach for `crc` from known
+    GitHub-hosted cheat collections and parse it into cheat dicts. Best-effort:
+    returns [] on any failure, missing `requests`, or no match anywhere."""
+    if requests is None or not crc:
+        return []
+    crc_upper = crc.upper()
+    for path in _GITHUB_PNACH_COLLECTIONS:
+        url = f"https://raw.githubusercontent.com/{path}/{crc_upper}.pnach"
+        try:
+            resp = requests.get(url, timeout=10, headers={'User-Agent': 'PCSX2-Manager/1.0'})
+            if resp.status_code == 200 and resp.text.strip():
+                cheats = parse_pnach_cheats(resp.text)
+                if cheats:
+                    return cheats
+        except Exception as e:
+            logger.debug(f"[cheats] GitHub pnach fetch failed for {crc}: {e}")
+    return []
+
+
 # ---- Curated texture-pack manifest ----
 # texture_sources.json maps a game serial to a known community GitHub repo that
 # publishes texture packs as release assets. There is no automatic/scraped
@@ -6415,6 +6478,38 @@ class LibraryView(QWidget):
             return cheats, "from the local database", log, self._cheats_already_installed(cheats_dir, crc)
 
         log.append("Local database: no entry for this serial.")
+
+        # A CRC is needed both to write a .pnach at all and to look up the
+        # CRC-keyed GitHub collection below -- resolve one now if we don't
+        # already have it, rather than only discovering the gap at install time.
+        if not game.crc:
+            try:
+                _resolved_title, resolved_crc, _html = cheat_online.resolve_serial_online(
+                    [game.serial, norm_serial_key(game.serial)])
+                if resolved_crc:
+                    game.crc = resolved_crc
+                    log.append(f"Resolved CRC online: {resolved_crc}.")
+                else:
+                    log.append("Could not resolve a CRC online.")
+            except Exception as e:
+                log.append(f"CRC resolution failed: {e}")
+
+        all_codes: List[dict] = []
+        seen_names = set()
+
+        if game.crc:
+            gh_cheats = fetch_github_pnach_cheats(game.crc)
+            if gh_cheats:
+                log.append(f"GitHub cheat collection: found {len(gh_cheats)} cheat(s) for CRC {game.crc}.")
+                for c in gh_cheats:
+                    if c['name'] not in seen_names:
+                        seen_names.add(c['name'])
+                        all_codes.append(c)
+            else:
+                log.append("GitHub cheat collection: nothing found for this CRC.")
+        else:
+            log.append("GitHub cheat collection: skipped (no CRC resolved).")
+
         try:
             results = fetch_and_cache_cheats(game.serial) or []
         except Exception as e:
@@ -6428,10 +6523,15 @@ class LibraryView(QWidget):
         ]
         if codes:
             log.append(f"Online search (GameHacking.org, PSXDataCenter): found {len(codes)} cheat(s).")
+            for c in codes:
+                if c['name'] not in seen_names:
+                    seen_names.add(c['name'])
+                    all_codes.append(c)
         else:
             log.append("Online search (GameHacking.org, PSXDataCenter): nothing found.")
+
         already = self._cheats_already_installed(cheats_dir, game.crc) if game.crc else False
-        return codes, "from online sources", log, already
+        return all_codes, "from online sources", log, already
 
     def _gather_texture_candidates(self, game: GameEntry, textures_dir: str):
         """Look up (without installing) what texture packs are available: the
