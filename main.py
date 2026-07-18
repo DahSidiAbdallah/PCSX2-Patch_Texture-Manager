@@ -106,6 +106,7 @@ import cheat_online
 from cheat_online import fetch_and_cache_cheats
 import theme
 import icons
+import effects
 import texture_upscale
 from bs4 import BeautifulSoup
 
@@ -6222,6 +6223,8 @@ class SyncDialog(QDialog):
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
 
+        effects.fade_in(self)
+
     def _update_ok_enabled(self):
         cheats_actionable = not self._cheats_already_installed or self.cheats_will_overwrite()
         textures_actionable = not self._textures_already_installed or self.textures_will_overwrite()
@@ -6294,7 +6297,9 @@ class LibraryView(QWidget):
         toolbar.setSpacing(theme.SPACING_SM)
         self.btn_scan = QPushButton("Scan Folder…")
         self.btn_scan.clicked.connect(self._scan_folder)
+        effects.add_hover_glow(self.btn_scan)
         self.btn_add = QPushButton("Add Game…")
+        effects.add_hover_glow(self.btn_add)
         toolbar.addWidget(self.btn_scan)
         toolbar.addWidget(self.btn_add)
         self.btn_add.clicked.connect(self._add_game_manually)
@@ -6313,6 +6318,8 @@ class LibraryView(QWidget):
         self.btn_view_grid.setFixedSize(30, 30)
         self.btn_view_list.clicked.connect(lambda: self._set_view_mode('list'))
         self.btn_view_grid.clicked.connect(lambda: self._set_view_mode('grid'))
+        effects.add_hover_glow(self.btn_view_list, max_blur=16)
+        effects.add_hover_glow(self.btn_view_grid, max_blur=16)
 
         self.grid_zoom_slider = QSlider(Qt.Horizontal)
         self.grid_zoom_slider.setRange(80, 220)
@@ -6432,6 +6439,7 @@ class LibraryView(QWidget):
         self.btn_sync.setMinimumHeight(42)
         self.btn_sync.setEnabled(False)
         self.btn_sync.clicked.connect(self._sync_selected)
+        effects.add_hover_glow(self.btn_sync, color=theme.COLOR_SUCCESS_HOVER, max_blur=28)
         hero_text.addWidget(self.btn_sync)
 
         self.result_label = QLabel("")
@@ -6478,9 +6486,9 @@ class LibraryView(QWidget):
         self.btn_view_list.setChecked(mode == 'list')
         self.btn_view_grid.setChecked(mode == 'grid')
         self.grid_zoom_slider.setVisible(mode == 'grid')
+        cur_min, cur_max = self.left_widget.minimumWidth(), self.left_widget.maximumWidth()
         if mode == 'grid':
-            self.left_widget.setMinimumWidth(600)
-            self.left_widget.setMaximumWidth(16777215)
+            effects.animate_width(self.left_widget, cur_min, cur_max, 600, 16777215)
             self._root_layout.setStretchFactor(self.left_widget, 3)
             self._root_layout.setStretchFactor(self.right_widget, 1)
             self.list_widget.setViewMode(QListWidget.IconMode)
@@ -6491,8 +6499,7 @@ class LibraryView(QWidget):
             self.list_widget.setIconSize(QSize(*self._grid_cover_size))
             self.list_widget.setGridSize(QSize(*self._grid_tile_size))
         else:
-            self.left_widget.setMinimumWidth(300)
-            self.left_widget.setMaximumWidth(380)
+            effects.animate_width(self.left_widget, cur_min, cur_max, 300, 380)
             self._root_layout.setStretchFactor(self.left_widget, 0)
             self._root_layout.setStretchFactor(self.right_widget, 1)
             self.list_widget.setViewMode(QListWidget.ListMode)
@@ -6571,7 +6578,7 @@ class LibraryView(QWidget):
         p = QPainter(out)
         p.setRenderHint(QPainter.Antialiasing)
         p.setBrush(color)
-        p.setPen(QColor("#1a1a1e"))
+        p.setPen(QColor(theme.COLOR_BG_TOP))
         p.drawEllipse(x, y, d, d)
         if cheats_installed and textures_installed:
             p.setPen(QPen(QColor("white"), 2))
@@ -6795,6 +6802,7 @@ class LibraryView(QWidget):
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
         lay.addRow(btns)
+        effects.fade_in(dlg)
         if dlg.exec() != QDialog.Accepted:
             return
 
@@ -7325,6 +7333,7 @@ class MainWindow(QMainWindow):
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(widget)
+        effects.fade_in(dlg)
         dlg.exec()
         lay.removeWidget(widget)
         widget.setParent(self)
@@ -7434,6 +7443,7 @@ def main():
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon("logo.png"))
     w = MainWindow()
+    effects.fade_in(w, duration=320)
     w.show()
     sys.exit(app.exec())
 
