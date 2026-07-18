@@ -693,6 +693,13 @@ def write_cheats_pnach(title: str, serial: str, crc: str, cheats: List[dict], ch
     Raises on failure (missing crc/cheats_dir, I/O errors) -- callers handle user-facing messaging.
     Shared by CheatsTab's manual install button and LibraryView's one-click sync so there's a
     single pnach-writing implementation instead of two drifting copies.
+
+    Each cheat gets its own "[Group Name]" bracket header (PCSX2's actual per-cheat
+    labeling syntax -- see https://pcsx2.net/docs/advanced/writing-patches/) so it
+    shows up as an individually named, toggleable entry in PCSX2's Cheats panel.
+    A "// comment" line does NOT do this -- PCSX2 only reads it as documentation,
+    so cheats written that way fall back to being lumped together as one block of
+    unlabeled codes that just auto-activate with no per-cheat control.
     """
     if not crc:
         raise ValueError("Cannot write a .pnach file without a CRC value.")
@@ -710,9 +717,10 @@ def write_cheats_pnach(title: str, serial: str, crc: str, cheats: List[dict], ch
         "",
     ]
     for cheat in cheats:
-        pnach_lines.append(f"// {cheat.get('name', '')}")
+        name = (cheat.get('name') or 'Cheat').replace('[', '(').replace(']', ')')
+        pnach_lines.append(f"[{name}]")
         if cheat.get('description'):
-            pnach_lines.append(f"// {cheat['description']}")
+            pnach_lines.append(f"description={cheat['description']}")
         for code in cheat.get('codes', []):
             pnach_lines.append(code)
         pnach_lines.append("")
