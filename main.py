@@ -864,6 +864,34 @@ def search_github_texture_packs(serial: str, title: str) -> Tuple[List[dict], Op
         return [], f"GitHub search failed: {e}"
 
 
+def save_texture_source(serial: str, entry: dict) -> bool:
+    """Persist a confirmed-working texture-pack entry into texture_sources.json
+    so it's a verified curated option next time instead of needing to be
+    rediscovered via GitHub search. Returns True on success."""
+    global _TEXTURE_MANIFEST_CACHE
+    path = os.path.join(os.path.dirname(__file__), 'texture_sources.json')
+    try:
+        manifest = dict(_load_texture_manifest())
+        key = serial.upper()
+        existing = list(manifest.get(key, []))
+        repo = entry.get('github_repo')
+        if any(e.get('github_repo') == repo for e in existing):
+            return True
+        existing.append({
+            'name': entry.get('name') or repo,
+            'github_repo': repo,
+            'asset_pattern': entry.get('asset_pattern', ''),
+        })
+        manifest[key] = existing
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        _TEXTURE_MANIFEST_CACHE = manifest
+        return True
+    except Exception as e:
+        logger.warning(f"[textures] Failed to save texture source for {serial}: {e}")
+        return False
+
+
 def _score_title_candidate(text: str, html: Optional[str] = None) -> int:
     """Return a heuristic score for a title candidate. Higher is better.
     Boosts multi-word, alphabetic content, presence of lowercase (likely proper titles),
@@ -6035,6 +6063,8 @@ class LibraryView(QWidget):
         self.list_widget = QListWidget()
         self.list_widget.setSpacing(2)
         self.list_widget.itemSelectionChanged.connect(self._on_selection_changed)
+        self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self._list_context_menu)
         left.addWidget(self.list_widget, 1)
 
         root.addWidget(left_widget)
@@ -6158,6 +6188,29 @@ class LibraryView(QWidget):
         if not items:
             return None
         return self.games.get(items[0].data(Qt.UserRole))
+
+    def _list_context_menu(self, pos):
+        item = self.list_widget.itemAt(pos)
+        if not item:
+            return
+        game = self.games.get(item.data(Qt.UserRole))
+        if not game:
+            return
+        menu = QMenu(self)
+        remove_act = menu.addAction("Remove from Library")
+        chosen = menu.exec_(self.list_widget.mapToGlobal(pos))
+        if chosen == remove_act:
+            reply = QMessageBox.question(
+                self, "Remove Game",
+                f"Remove \"{game.title or game.serial}\" from your library?\n\n"
+                f"This only removes it from this app's list -- any cheats/textures "
+                f"already installed in PCSX2 are left untouched.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                del self.games[game.serial]
+                self._save_library()
+                self._refresh_list(self.search_box.text())
 
     def _set_status(self, label: QLabel, text: str, kind: str = "muted"):
         obj_names = {
@@ -6495,6 +6548,8 @@ class LibraryView(QWidget):
 
             if installed:
                 self._set_status(self.textures_status_label, f"Installed ({display_name})", "success")
+                if not entry.get('verified', True):
+                    self._offer_save_texture_source(game.serial, entry, download_url)
                 return f"Textures: installed '{display_name}' from {repo}."
             msg = failures[0][2] if failures else "install failed"
             self._set_status(self.textures_status_label, "Install failed", "error")
@@ -6503,6 +6558,26 @@ class LibraryView(QWidget):
             self._set_status(self.textures_status_label, "Error", "error")
             logger.error(f"[LibraryView] Textures install failed for {game.serial}: {e}")
             return f"Textures: error -- {e}"
+
+    def _offer_save_texture_source(self, serial: str, entry: dict, download_url: str):
+        """After a successful install from an unverified GitHub search result,
+        offer to promote it into the persistent curated manifest -- closes the
+        loop on "control over sources": your own confirmed finds stick around
+        instead of needing to be rediscovered by search every time."""
+        asset_name = os.path.basename(download_url.split('?')[0])
+        reply = QMessageBox.question(
+            self, "Remember This Source?",
+            f"\"{entry.get('github_repo')}\" worked for this game.\n\n"
+            f"Add it to texture_sources.json so future syncs find it directly "
+            f"instead of searching GitHub again?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        clean_entry = {'name': entry.get('name') or entry.get('github_repo'),
+                        'github_repo': entry.get('github_repo'), 'asset_pattern': asset_name}
+        if not save_texture_source(serial, clean_entry):
+            QMessageBox.warning(self, "Couldn't Save", "Failed to update texture_sources.json.")
 
     def _refresh_installed_status(self, game: GameEntry):
         """Reflect what's actually on disk for this game, not just what happened
