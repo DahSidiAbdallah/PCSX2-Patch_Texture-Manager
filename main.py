@@ -786,10 +786,19 @@ def resolve_texture_release_asset(entry: dict) -> Optional[Tuple[str, str, str]]
         )
         if resp.status_code != 200:
             return None
-        for asset in resp.json().get('assets', []):
+        assets = resp.json().get('assets', [])
+        for asset in assets:
             name = asset.get('name', '')
-            if not asset_pattern or name.lower() == asset_pattern:
+            if asset_pattern and name.lower() == asset_pattern:
                 return entry.get('name', repo), repo, asset.get('browser_download_url')
+        if not asset_pattern:
+            # Unverified search candidate with no known filename -- best-effort:
+            # take the first .zip release asset (perform_pack_installs only
+            # handles .zip), not just whatever happens to be listed first.
+            for asset in assets:
+                name = asset.get('name', '')
+                if name.lower().endswith('.zip'):
+                    return entry.get('name', repo), repo, asset.get('browser_download_url')
     except Exception as e:
         logger.warning(f"[textures] Failed to resolve GitHub release for {repo}: {e}")
     return None
@@ -803,6 +812,56 @@ def resolve_texture_pack_url(serial: str) -> Optional[Tuple[str, str, str]]:
     if not options:
         return None
     return resolve_texture_release_asset(options[0])
+
+
+def search_github_texture_packs(serial: str, title: str) -> Tuple[List[dict], Optional[str]]:
+    """Best-effort GitHub repository search for community PCSX2 texture packs
+    that aren't in the curated manifest yet. Returns (candidates, error) --
+    candidates are shaped like manifest entries (name/github_repo, no
+    asset_pattern) plus 'verified': False and 'stars'/'url' for display; these
+    are unverified hits and must always be shown to the user for manual
+    confirmation, never auto-installed, unlike the hand-checked curated
+    manifest. `error` is a human-readable note (e.g. rate-limited) when the
+    search couldn't run, so the caller can tell "nothing found" apart from
+    "couldn't check".
+
+    GitHub's search endpoint has a much tighter unauthenticated rate limit
+    (10 requests/minute) than the releases API used elsewhere in this module,
+    so this only fires one query -- by title, since repos essentially never
+    contain a game's literal serial in their name/description/README, so a
+    serial-based query reliably finds nothing and would just burn budget.
+    """
+    if requests is None or not title:
+        return [], None
+    headers = {'Accept': 'application/vnd.github+json', 'User-Agent': 'PCSX2-Manager/1.0'}
+    try:
+        resp = requests.get(
+            'https://api.github.com/search/repositories',
+            params={'q': f'{title} pcsx2 texture', 'per_page': 8},
+            headers=headers, timeout=10,
+        )
+        if resp.status_code == 403:
+            return [], "GitHub search is rate-limited right now (unauthenticated searches are capped at 10/minute) -- try again in a bit."
+        if resp.status_code != 200:
+            return [], f"GitHub search returned HTTP {resp.status_code}."
+        candidates = []
+        for item in resp.json().get('items', []):
+            repo = item.get('full_name')
+            if not repo:
+                continue
+            candidates.append({
+                'name': item.get('name', repo),
+                'github_repo': repo,
+                'description': item.get('description') or '',
+                'stars': item.get('stargazers_count', 0),
+                'url': item.get('html_url'),
+                'verified': False,
+            })
+        candidates.sort(key=lambda c: -c.get('stars', 0))
+        return candidates[:6], None
+    except Exception as e:
+        logger.debug(f"[textures] GitHub search failed: {e}")
+        return [], f"GitHub search failed: {e}"
 
 
 def _score_title_candidate(text: str, html: Optional[str] = None) -> int:
@@ -5806,6 +5865,113 @@ class GameListItemWidget(QWidget):
         self.icon_label.setPixmap(blank)
 
 
+class SyncDialog(QDialog):
+    """Shown when "Sync This Game" is clicked: real control over what actually
+    gets installed instead of silently auto-installing everything found -- a
+    checkbox list of individual cheats, a choice of texture pack (curated
+    matches, or unverified GitHub search candidates the user must explicitly
+    pick), and a log of exactly what was searched so coverage isn't a black
+    box.
+    """
+
+    def __init__(self, game: 'GameEntry', cheat_candidates: List[dict], cheat_source_note: str,
+                 texture_candidates: List[dict], search_log: List[str],
+                 cheats_already_installed: bool, textures_already_installed: bool, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Sync {game.title or game.serial}")
+        self.resize(640, 620)
+
+        layout = QVBoxLayout(self)
+        header = QLabel(f"<b>{game.title or game.serial}</b>  ({game.serial})")
+        layout.addWidget(header)
+
+        # --- Cheats ---
+        cheats_title = "Cheats -- already installed, left unchanged" if cheats_already_installed else f"Cheats ({cheat_source_note})"
+        cheats_grp = QGroupBox(cheats_title)
+        cheats_lay = QVBoxLayout(cheats_grp)
+        self.cheats_list = QListWidget()
+        if cheats_already_installed:
+            cheats_grp.setEnabled(False)
+        elif not cheat_candidates:
+            cheats_lay.addWidget(QLabel("No cheats found for this game."))
+        else:
+            btn_row = QHBoxLayout()
+            btn_all = QPushButton("All")
+            btn_none = QPushButton("None")
+            btn_row.addWidget(btn_all)
+            btn_row.addWidget(btn_none)
+            btn_row.addStretch(1)
+            cheats_lay.addLayout(btn_row)
+            for c in cheat_candidates:
+                item = QListWidgetItem(c.get('name') or 'Cheat')
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked)
+                item.setData(Qt.UserRole, c)
+                if c.get('description'):
+                    item.setToolTip(c['description'])
+                self.cheats_list.addItem(item)
+            btn_all.clicked.connect(lambda: self._set_all_checked(Qt.Checked))
+            btn_none.clicked.connect(lambda: self._set_all_checked(Qt.Unchecked))
+        cheats_lay.addWidget(self.cheats_list)
+        layout.addWidget(cheats_grp)
+
+        # --- Textures ---
+        tex_title = "Texture Pack -- already installed, left unchanged" if textures_already_installed else "Texture Pack"
+        tex_grp = QGroupBox(tex_title)
+        tex_lay = QVBoxLayout(tex_grp)
+        self.texture_combo = QComboBox()
+        if textures_already_installed:
+            tex_grp.setEnabled(False)
+        else:
+            self.texture_combo.addItem("Don't install a texture pack", None)
+            for t in texture_candidates:
+                label = t.get('name') or t.get('github_repo') or 'Pack'
+                if not t.get('verified', True):
+                    label += f"  (unverified search result, {t.get('stars', 0)}★ -- {t.get('github_repo')})"
+                self.texture_combo.addItem(label, t)
+            if texture_candidates:
+                self.texture_combo.setCurrentIndex(1)
+            else:
+                tex_lay.addWidget(QLabel("No texture pack found."))
+        tex_lay.addWidget(self.texture_combo)
+        layout.addWidget(tex_grp)
+
+        # --- Search log ---
+        log_grp = QGroupBox("What was searched")
+        log_lay = QVBoxLayout(log_grp)
+        log_text = QTextEdit()
+        log_text.setReadOnly(True)
+        log_text.setMaximumHeight(110)
+        log_text.setPlainText("\n".join(search_log) if search_log else "(nothing to search -- already installed)")
+        log_lay.addWidget(log_text)
+        layout.addWidget(log_grp)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        ok_btn = btns.button(QDialogButtonBox.Ok)
+        ok_btn.setText("Install Selected")
+        ok_btn.setObjectName(theme.OBJ_SUCCESS_BUTTON)
+        if cheats_already_installed and textures_already_installed:
+            ok_btn.setEnabled(False)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def _set_all_checked(self, state):
+        for i in range(self.cheats_list.count()):
+            self.cheats_list.item(i).setCheckState(state)
+
+    def selected_cheats(self) -> List[dict]:
+        out = []
+        for i in range(self.cheats_list.count()):
+            item = self.cheats_list.item(i)
+            if item.checkState() == Qt.Checked:
+                out.append(item.data(Qt.UserRole))
+        return out
+
+    def selected_texture_entry(self) -> Optional[dict]:
+        return self.texture_combo.currentData()
+
+
 class LibraryView(QWidget):
     """The main screen: your scanned game library on the left, and on the
     right a cover-art detail panel with a one-click "Sync" for the selected
@@ -5929,18 +6095,6 @@ class LibraryView(QWidget):
         status_form.addRow("Textures:", self.textures_status_label)
         hero_text.addWidget(status_grp)
 
-        texture_row = QHBoxLayout()
-        texture_row.setSpacing(theme.SPACING_SM)
-        texture_label = QLabel("Texture pack:")
-        texture_label.setObjectName(theme.OBJ_MUTED_LABEL)
-        self.texture_pack_combo = QComboBox()
-        texture_row.addWidget(texture_label)
-        texture_row.addWidget(self.texture_pack_combo, 1)
-        self.texture_pack_row = QWidget()
-        self.texture_pack_row.setLayout(texture_row)
-        self.texture_pack_row.setVisible(False)
-        hero_text.addWidget(self.texture_pack_row)
-
         self.btn_sync = QPushButton("Sync This Game")
         self.btn_sync.setObjectName(theme.OBJ_SUCCESS_BUTTON)
         self.btn_sync.setMinimumHeight(42)
@@ -6025,7 +6179,6 @@ class LibraryView(QWidget):
             self._set_status(self.cheats_status_label, "—")
             self._set_status(self.textures_status_label, "—")
             self.result_label.setText("")
-            self.texture_pack_row.setVisible(False)
             self._set_cover_pixmap(create_library_cover_placeholder(""))
             self.parent.state.current_game = None
             self.parent.current_game_changed.emit(None)
@@ -6036,12 +6189,6 @@ class LibraryView(QWidget):
         self._refresh_installed_status(game)
         self.result_label.setText("")
         self.btn_sync.setEnabled(True)
-
-        self.texture_pack_combo.clear()
-        options = get_texture_pack_options(game.serial)
-        for opt in options:
-            self.texture_pack_combo.addItem(opt.get('name') or opt.get('github_repo') or 'Texture pack', opt)
-        self.texture_pack_row.setVisible(bool(options))
 
         self._load_cover(game)
 
@@ -6201,48 +6348,64 @@ class LibraryView(QWidget):
         self._refresh_list(self.search_box.text())
 
     # ---- sync ----
-    def _preview_sync(self, game: GameEntry, paths: dict) -> str:
-        """Describe what "Sync This Game" is actually about to do, without doing
-        any of it -- shown in a confirmation dialog so nothing installs as a
-        surprise. Local-only checks (no extra network calls beyond what a normal
-        sync would make anyway)."""
-        lines = []
-        cheats_dir = paths.get('cheats', '')
-        textures_dir = paths.get('textures', '')
-
+    def _gather_cheat_candidates(self, game: GameEntry, cheats_dir: str):
+        """Look up (without installing) what cheats are available, from the
+        local database first and online sources as a fallback. Returns
+        (candidates, source_note, log_lines, already_installed)."""
+        log = []
         local = find_local_cheats(game.serial)
         if local:
             title, crc, cheats = local
-            if self._cheats_already_installed(cheats_dir, crc):
-                lines.append("Cheats: already installed -- will be left unchanged.")
-            elif cheats:
-                lines.append(
-                    f"Cheats: {len(cheats)} code(s) from the local database will be "
-                    f"written to:\n{os.path.join(cheats_dir, crc.upper() + '.pnach')}"
-                )
-            else:
-                lines.append("Cheats: found in the local database, but it has no codes listed.")
-        else:
-            lines.append(
-                "Cheats: not in the local database -- will search online sources "
-                "(GameHacking.org, PSXDataCenter) instead."
-            )
+            if crc:
+                game.crc = crc
+            log.append(f"Local database: found \"{title}\" with {len(cheats)} cheat(s).")
+            return cheats, "from the local database", log, self._cheats_already_installed(cheats_dir, crc)
 
-        chosen_entry = self.texture_pack_combo.currentData() if self.texture_pack_combo.count() else None
-        if not textures_dir or not os.path.isdir(textures_dir):
-            lines.append("Textures: PCSX2 textures folder isn't set -- nothing will be installed.")
+        log.append("Local database: no entry for this serial.")
+        try:
+            results = fetch_and_cache_cheats(game.serial) or []
+        except Exception as e:
+            results = []
+            log.append(f"Online search failed: {e}")
+        codes = [
+            {'name': entry.get('title') or entry.get('source', 'Cheat'),
+             'description': entry.get('source', ''),
+             'codes': entry['codes']}
+            for entry in results if entry.get('codes')
+        ]
+        if codes:
+            log.append(f"Online search (GameHacking.org, PSXDataCenter): found {len(codes)} cheat(s).")
         else:
-            existing_dir = os.path.join(textures_dir, game.serial)
-            if os.path.isdir(existing_dir) and os.listdir(existing_dir):
-                lines.append("Textures: already installed -- will be left unchanged.")
-            elif chosen_entry:
-                lines.append(
-                    f"Textures: \"{chosen_entry.get('name')}\" will be downloaded from "
-                    f"{chosen_entry.get('github_repo')} and installed to:\n{existing_dir}"
-                )
-            else:
-                lines.append("Textures: no pack found in the community index for this game.")
-        return "\n\n".join(lines)
+            log.append("Online search (GameHacking.org, PSXDataCenter): nothing found.")
+        already = self._cheats_already_installed(cheats_dir, game.crc) if game.crc else False
+        return codes, "from online sources", log, already
+
+    def _gather_texture_candidates(self, game: GameEntry, textures_dir: str):
+        """Look up (without installing) what texture packs are available: the
+        curated manifest first, then an unverified GitHub repo search if
+        nothing curated exists. Returns (candidates, log_lines, already_installed)."""
+        existing_dir = os.path.join(textures_dir, game.serial) if textures_dir else ''
+        if existing_dir and os.path.isdir(existing_dir) and os.listdir(existing_dir):
+            return [], ["Already installed -- left unchanged."], True
+
+        log = []
+        curated = get_texture_pack_options(game.serial)
+        if curated:
+            log.append(f"Curated index: {len(curated)} verified option(s) found.")
+            return curated, log, False
+
+        log.append("Curated index: no entry for this game.")
+        if requests is None:
+            log.append("GitHub search: skipped (requests not installed).")
+            return [], log, False
+        search_results, err = search_github_texture_packs(game.serial, game.title)
+        if err:
+            log.append(f"GitHub search: {err}")
+        elif search_results:
+            log.append(f"GitHub search: {len(search_results)} unverified candidate(s) found -- review before installing.")
+        else:
+            log.append("GitHub search: nothing found.")
+        return search_results, log, False
 
     def _sync_selected(self):
         game = self._selected_game()
@@ -6250,28 +6413,96 @@ class LibraryView(QWidget):
             return
         paths = self.parent.state.pcsx2_paths or {}
         cheats_dir = paths.get('cheats', '')
+        textures_dir = paths.get('textures', '')
         if not cheats_dir or not os.path.isdir(cheats_dir):
             QMessageBox.warning(self, "PCSX2 Folder Not Set", "Set your PCSX2 folder in Settings (gear icon) first.")
             return
 
-        preview = self._preview_sync(game, paths)
-        reply = QMessageBox.question(
-            self, f"Sync {game.title or game.serial}?",
-            preview + "\n\nExisting installs are never overwritten. Proceed?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
-        )
-        if reply != QMessageBox.Yes:
-            return
-
         self.btn_sync.setEnabled(False)
-        self.result_label.setText("Syncing…")
+        self.result_label.setText("Searching…")
         QApplication.processEvents()
 
-        cheats_msg = self._sync_cheats(game, cheats_dir)
-        textures_msg = self._sync_textures(game, paths.get('textures', ''))
+        cheat_candidates, cheat_source_note, cheat_log, cheats_installed = self._gather_cheat_candidates(game, cheats_dir)
+        texture_candidates, texture_log, textures_installed = self._gather_texture_candidates(game, textures_dir)
 
         self.btn_sync.setEnabled(True)
-        self.result_label.setText(f"Cheats: {cheats_msg}\nTextures: {textures_msg}")
+        self.result_label.setText("")
+
+        search_log = ["Cheats:"] + [f"  {l}" for l in cheat_log] + ["", "Textures:"] + [f"  {l}" for l in texture_log]
+        dlg = SyncDialog(game, cheat_candidates, cheat_source_note, texture_candidates, search_log,
+                          cheats_installed, textures_installed, parent=self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        results = []
+        if cheats_installed:
+            results.append("Cheats: already installed, left unchanged.")
+        else:
+            selected_cheats = dlg.selected_cheats()
+            if not selected_cheats:
+                self._set_status(self.cheats_status_label, "Skipped")
+                results.append("Cheats: nothing selected, skipped.")
+            elif not game.crc:
+                self._set_status(self.cheats_status_label, "No CRC available", "warning")
+                results.append("Cheats: couldn't determine a CRC to install with.")
+            else:
+                try:
+                    write_cheats_pnach(game.title or game.serial, game.serial, game.crc, selected_cheats, cheats_dir)
+                    self._set_status(self.cheats_status_label, f"{len(selected_cheats)} code(s) installed", "success")
+                    results.append(f"Cheats: installed {len(selected_cheats)} selected code(s).")
+                    self._save_library()
+                except Exception as e:
+                    self._set_status(self.cheats_status_label, "Error", "error")
+                    logger.error(f"[LibraryView] Cheats install failed for {game.serial}: {e}")
+                    results.append(f"Cheats: error -- {e}")
+
+        if textures_installed:
+            results.append("Textures: already installed, left unchanged.")
+        else:
+            selected_texture = dlg.selected_texture_entry()
+            if not selected_texture:
+                self._set_status(self.textures_status_label, "Skipped")
+                results.append("Textures: nothing selected, skipped.")
+            else:
+                results.append(self._install_texture_entry(game, textures_dir, selected_texture))
+
+        self.result_label.setText("\n".join(results))
+
+    def _install_texture_entry(self, game: GameEntry, textures_dir: str, entry: dict) -> str:
+        try:
+            resolved = resolve_texture_release_asset(entry)
+            if not resolved or not resolved[2]:
+                self._set_status(self.textures_status_label, "Install failed", "error")
+                return "Textures: couldn't resolve a download for the selected pack."
+            display_name, repo, download_url = resolved
+
+            tmp_dir = os.path.join(os.path.expanduser('~'), '.pcsx2_manager_tmp')
+            os.makedirs(tmp_dir, exist_ok=True)
+            local_zip = os.path.join(tmp_dir, f"{game.serial}_texture_pack.zip")
+            resp = requests.get(download_url, timeout=60, stream=True)
+            resp.raise_for_status()
+            with open(local_zip, 'wb') as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 256):
+                    if chunk:
+                        f.write(chunk)
+
+            from textures_install import perform_pack_installs
+            installed, failures = perform_pack_installs([(display_name, local_zip)], textures_dir, target_hint=game.serial)
+            try:
+                os.remove(local_zip)
+            except Exception:
+                pass
+
+            if installed:
+                self._set_status(self.textures_status_label, f"Installed ({display_name})", "success")
+                return f"Textures: installed '{display_name}' from {repo}."
+            msg = failures[0][2] if failures else "install failed"
+            self._set_status(self.textures_status_label, "Install failed", "error")
+            return f"Textures: found a pack but install failed -- {msg}"
+        except Exception as e:
+            self._set_status(self.textures_status_label, "Error", "error")
+            logger.error(f"[LibraryView] Textures install failed for {game.serial}: {e}")
+            return f"Textures: error -- {e}"
 
     def _refresh_installed_status(self, game: GameEntry):
         """Reflect what's actually on disk for this game, not just what happened
@@ -6301,104 +6532,6 @@ class LibraryView(QWidget):
     @staticmethod
     def _cheats_already_installed(cheats_dir: str, crc: str) -> bool:
         return bool(crc) and os.path.isfile(os.path.join(cheats_dir, f"{crc.upper()}.pnach"))
-
-    def _sync_cheats(self, game: GameEntry, cheats_dir: str) -> str:
-        try:
-            local = find_local_cheats(game.serial)
-            if local:
-                title, crc, cheats = local
-                if crc:
-                    game.crc = crc
-                if self._cheats_already_installed(cheats_dir, crc):
-                    self._set_status(self.cheats_status_label, "Already installed", "warning")
-                    return "already installed -- left your existing .pnach unchanged"
-                if not cheats:
-                    self._set_status(self.cheats_status_label, "No codes in local database")
-                    return "no codes in the local database"
-                write_cheats_pnach(title, game.serial, crc, cheats, cheats_dir)
-                self._set_status(self.cheats_status_label, f"{len(cheats)} code(s) installed", "success")
-                self._save_library()
-                return f"installed {len(cheats)} code(s) from the local database"
-
-            results = fetch_and_cache_cheats(game.serial) or []
-            codes = [
-                {'name': entry.get('title') or entry.get('source', 'Cheat'),
-                 'description': entry.get('source', ''),
-                 'codes': entry['codes']}
-                for entry in results if entry.get('codes')
-            ]
-            if not codes:
-                self._set_status(self.cheats_status_label, "Not found")
-                return "no cheats found (local database or online)"
-            crc = game.crc or ''
-            if not crc:
-                self._set_status(self.cheats_status_label, "Found online, but no CRC available", "warning")
-                return "found online, but couldn't determine a CRC to install with"
-            if self._cheats_already_installed(cheats_dir, crc):
-                self._set_status(self.cheats_status_label, "Already installed", "warning")
-                return "already installed -- left your existing .pnach unchanged"
-            write_cheats_pnach(game.title, game.serial, crc, codes, cheats_dir)
-            self._set_status(self.cheats_status_label, f"{len(codes)} code(s) installed", "success")
-            return f"installed {len(codes)} code(s) from online sources"
-        except Exception as e:
-            self._set_status(self.cheats_status_label, "Error", "error")
-            logger.error(f"[LibraryView] Cheats sync failed for {game.serial}: {e}")
-            return f"error -- {e}"
-
-    def _sync_textures(self, game: GameEntry, textures_dir: str) -> str:
-        if not textures_dir or not os.path.isdir(textures_dir):
-            self._set_status(self.textures_status_label, "Textures folder not set", "warning")
-            return "PCSX2 textures folder not set"
-        if requests is None:
-            self._set_status(self.textures_status_label, "Not found")
-            return "no texture-pack lookup available (requests not installed)"
-
-        # perform_pack_installs() unconditionally replaces an existing target
-        # folder (textures_install.py's dst = os.path.join(base, target_hint));
-        # a one-click sync must never silently wipe an already-installed pack.
-        existing_dir = os.path.join(textures_dir, game.serial)
-        if os.path.isdir(existing_dir) and os.listdir(existing_dir):
-            self._set_status(self.textures_status_label, "Already installed", "warning")
-            return "already installed -- left your existing pack unchanged"
-
-        try:
-            chosen_entry = self.texture_pack_combo.currentData() if self.texture_pack_combo.count() else None
-            if chosen_entry:
-                resolved = resolve_texture_release_asset(chosen_entry)
-            else:
-                resolved = resolve_texture_pack_url(game.serial)
-            if not resolved or not resolved[2]:
-                self._set_status(self.textures_status_label, "Not found")
-                return "no pack found in the community index"
-            display_name, repo, download_url = resolved
-
-            tmp_dir = os.path.join(os.path.expanduser('~'), '.pcsx2_manager_tmp')
-            os.makedirs(tmp_dir, exist_ok=True)
-            local_zip = os.path.join(tmp_dir, f"{game.serial}_texture_pack.zip")
-            resp = requests.get(download_url, timeout=60, stream=True)
-            resp.raise_for_status()
-            with open(local_zip, 'wb') as f:
-                for chunk in resp.iter_content(chunk_size=1024 * 256):
-                    if chunk:
-                        f.write(chunk)
-
-            from textures_install import perform_pack_installs
-            installed, failures = perform_pack_installs([(display_name, local_zip)], textures_dir, target_hint=game.serial)
-            try:
-                os.remove(local_zip)
-            except Exception:
-                pass
-
-            if installed:
-                self._set_status(self.textures_status_label, f"Installed ({display_name})", "success")
-                return f"installed '{display_name}' from {repo}"
-            msg = failures[0][2] if failures else "install failed"
-            self._set_status(self.textures_status_label, "Install failed", "error")
-            return f"found a pack but install failed -- {msg}"
-        except Exception as e:
-            self._set_status(self.textures_status_label, "Error", "error")
-            logger.error(f"[LibraryView] Textures sync failed for {game.serial}: {e}")
-            return f"error -- {e}"
 
     # ---- worker bookkeeping (matches CheatsTab/TexturesTab pattern) ----
     def _start_worker(self, worker: QThread):
