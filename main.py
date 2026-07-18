@@ -539,6 +539,63 @@ def write_cheats_pnach(title: str, serial: str, crc: str, cheats: List[dict], ch
     return filepath
 
 
+# ---- Curated texture-pack manifest ----
+# texture_sources.json maps a game serial to a known community GitHub repo that
+# publishes texture packs as release assets. There is no automatic/scraped
+# texture-pack discovery -- entries are hand-verified (real repo, real release,
+# real asset) rather than guessed, so most games will honestly report "not
+# found" until the manifest is extended. Users can edit the JSON file directly.
+_TEXTURE_MANIFEST_CACHE: Optional[dict] = None
+
+
+def _load_texture_manifest() -> dict:
+    global _TEXTURE_MANIFEST_CACHE
+    if _TEXTURE_MANIFEST_CACHE is not None:
+        return _TEXTURE_MANIFEST_CACHE
+    path = os.path.join(os.path.dirname(__file__), 'texture_sources.json')
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            _TEXTURE_MANIFEST_CACHE = json.load(f)
+    except Exception as e:
+        logger.warning(f"[textures] Failed to load texture_sources.json: {e}")
+        _TEXTURE_MANIFEST_CACHE = {}
+    return _TEXTURE_MANIFEST_CACHE
+
+
+def resolve_texture_pack_url(serial: str) -> Optional[Tuple[str, str, str]]:
+    """Look up `serial` in the curated texture-pack manifest and resolve the
+    current download URL for its GitHub release asset via GitHub's public
+    releases API (no auth needed for public repos within rate limits).
+    Returns (display_name, repo, download_url), or None if the serial isn't
+    in the manifest, there's no matching release/asset, or `requests` isn't
+    available.
+    """
+    if requests is None or not serial:
+        return None
+    entry = _load_texture_manifest().get(serial.upper())
+    if not entry:
+        return None
+    repo = entry.get('github_repo')
+    asset_pattern = (entry.get('asset_pattern') or '').lower()
+    if not repo:
+        return None
+    try:
+        resp = requests.get(
+            f'https://api.github.com/repos/{repo}/releases/latest',
+            headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'PCSX2-Manager/1.0'},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+        for asset in resp.json().get('assets', []):
+            name = asset.get('name', '')
+            if not asset_pattern or name.lower() == asset_pattern:
+                return entry.get('name', repo), repo, asset.get('browser_download_url')
+    except Exception as e:
+        logger.warning(f"[textures] Failed to resolve GitHub release for {repo}: {e}")
+    return None
+
+
 def _score_title_candidate(text: str, html: Optional[str] = None) -> int:
     """Return a heuristic score for a title candidate. Higher is better.
     Boosts multi-word, alphabetic content, presence of lowercase (likely proper titles),
@@ -5682,9 +5739,47 @@ class LibraryView(QWidget):
             return f"error -- {e}"
 
     def _sync_textures(self, game: GameEntry, textures_dir: str) -> str:
-        # Wired up in a follow-up commit (curated GitHub texture-pack manifest).
-        self.textures_status_label.setText("Not available yet")
-        return "texture sync isn't wired up yet"
+        if not textures_dir or not os.path.isdir(textures_dir):
+            self.textures_status_label.setText("Textures folder not set")
+            return "PCSX2 textures folder not set"
+        if requests is None:
+            self.textures_status_label.setText("Not found")
+            return "no texture-pack lookup available (requests not installed)"
+
+        try:
+            resolved = resolve_texture_pack_url(game.serial)
+            if not resolved or not resolved[2]:
+                self.textures_status_label.setText("Not found")
+                return "no pack found in the community index"
+            display_name, repo, download_url = resolved
+
+            tmp_dir = os.path.join(os.path.expanduser('~'), '.pcsx2_manager_tmp')
+            os.makedirs(tmp_dir, exist_ok=True)
+            local_zip = os.path.join(tmp_dir, f"{game.serial}_texture_pack.zip")
+            resp = requests.get(download_url, timeout=60, stream=True)
+            resp.raise_for_status()
+            with open(local_zip, 'wb') as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 256):
+                    if chunk:
+                        f.write(chunk)
+
+            from textures_install import perform_pack_installs
+            installed, failures = perform_pack_installs([(display_name, local_zip)], textures_dir, target_hint=game.serial)
+            try:
+                os.remove(local_zip)
+            except Exception:
+                pass
+
+            if installed:
+                self.textures_status_label.setText(f"Installed ({display_name})")
+                return f"installed '{display_name}' from {repo}"
+            msg = failures[0][2] if failures else "install failed"
+            self.textures_status_label.setText("Install failed")
+            return f"found a pack but install failed -- {msg}"
+        except Exception as e:
+            self.textures_status_label.setText("Error")
+            logger.error(f"[LibraryView] Textures sync failed for {game.serial}: {e}")
+            return f"error -- {e}"
 
     # ---- worker bookkeeping (matches CheatsTab/TexturesTab pattern) ----
     def _start_worker(self, worker: QThread):
