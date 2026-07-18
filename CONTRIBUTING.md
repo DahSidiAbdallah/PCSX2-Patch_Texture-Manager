@@ -5,6 +5,8 @@ This short guide explains where to start, how to run the app/tests locally, and 
 Quick start
 - Main GUI entrypoint: `main.py` — run with `python main.py` from the repository root.
 - Library / helper modules: most logic lives in `main.py` (parsing, build_pnach, workers) and small helpers such as `cheat_online.py`, `textures_install.py`.
+- Styling and icons: colors/spacing/QSS live in `theme.py`, small QPainter-drawn icons in `icons.py` — add new object-name-targeted styles there rather than inline `setStyleSheet()` calls.
+- `texture_sources.json` is the curated serial → GitHub-repo manifest used by the library sync feature; entries should point at a real repo with a real release before being added.
 
 Running locally (recommended)
 1. Create a venv and activate it:

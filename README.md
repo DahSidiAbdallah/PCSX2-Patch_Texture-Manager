@@ -2,29 +2,29 @@
 	<img src="logo.png" alt="logo" width="240" />
 </p>
 
-# PCSX2 Patch & Texture Manager — Beta
+# PCSX2 Manager — Beta
 
-Lightweight GUI tool to help create, import, preview and install PCSX2 `.pnach` patches and texture packs.
+A library-first desktop tool: point it at your PS2 games folder, then pick a game and install its matching cheats and texture pack with one click.
 
 Version: beta
 
 ## Summary
 
-This project provides a Qt-based desktop application (PySide6) for working with PCSX2 patch files (`.pnach`) and texture replacement packs. It includes:
+This project provides a Qt-based desktop application (PySide6) built around your game library rather than manual browsing. It includes:
 
-- RAW ↔ PNACH conversion and previewing
-- Auto-detection and resolution of Serial/CRC values (local mapping + optional online PSXDataCenter lookup)
-- Fetching and importing online cheats (GameHacking.org, PSXDataCenter)
-- Drag & drop support for `.pnach`, `.zip` and folders
-- Texture pack import/installation with automatic CRC suggestions
-- Simple INI toggles and test launch for PCSX2
-- Per-game profile export/import (JSON)
+- **Library scan**: point it at a folder of PS2 disc images (`.iso`/`.bin`/`.chd`/`.cso`) and it detects each game's serial/title from the filename. Games that aren't picked up automatically can be added manually by serial.
+- **One-click sync**: select a game and click "Sync This Game" to install its cheats (from a bundled offline database, falling back to online sources) and its texture pack (from a small curated GitHub-repo index), always matched to that game's exact region/serial.
+- **Custom window chrome**: a frameless, dark-themed title bar instead of the native OS chrome.
+- **Advanced tools** (title bar menu): the original manual `.pnach` editor (RAW ↔ PNACH conversion/preview, raw code parsing, online cheat search) and texture pack manager (drag & drop `.zip`/folder install, staging) are still there for power users, just tucked out of the primary flow.
+- **Settings** (gear icon): PCSX2 folder detection/override, INI toggles, quick launch, game profiles.
 
 ## Current implementation / features
 
 - GUI application entrypoint: `main.py` (Qt/PySide6)
+- `LibraryView`: folder scan (`GameScanWorker`), manual add, and sync orchestration reusing the existing cheat/texture install pipelines
+- Local cheats database (`ps2_cheats_database_merged.json`) loaded once and shared across the app; online fallback via `cheat_online.py` (GameHacking.org, PSXDataCenter)
+- Curated texture-pack manifest (`texture_sources.json`, hand-verified GitHub repos) resolved through GitHub's public releases API; installed via `textures_install.py`
 - Title resolver using local bundled PSXDataCenter HTML files (`ulist2.html`, `plist2.html`, `jlist2.html`) and optional online lookup
-- Online cheat fetching via `cheat_online.py` (GameHacking.org, PSXDataCenter)
 - Helpers for parsing and building PNACH files: `parse_pnach_text`, `parse_raw_8x8`, `build_pnach`
 - Thumbnail/cover fetching for installed packs (caches under the user's home directory)
 

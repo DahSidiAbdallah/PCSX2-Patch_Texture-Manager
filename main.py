@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QFileDialog, QTabWidget, QVBoxLayout,
+    QApplication, QMainWindow, QWidget, QFileDialog, QVBoxLayout,
     QHBoxLayout, QFormLayout, QLineEdit, QTextEdit, QPushButton, QLabel, QHeaderView,
     QMessageBox, QListWidget, QProgressBar, QGroupBox, QComboBox, QCheckBox,
     QDialog, QListWidgetItem, QAbstractItemView, QRadioButton,
