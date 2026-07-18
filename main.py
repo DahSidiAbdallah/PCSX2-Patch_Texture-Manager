@@ -208,14 +208,24 @@ class AppState:
 
 # Guess common PCSX2 user dir locations
 
-def default_pcsx2_user_dirs() -> List[str]:
+def default_pcsx2_user_dirs(pcsx2_exe: str = "") -> List[str]:
+    """Guess PCSX2's user data folder. If `pcsx2_exe` is given and PCSX2's
+    portable-mode marker (a "portable.ini" file next to the executable) is
+    present, that folder is the *actual* answer and takes priority -- a
+    portable install keeps all its data (including the cheats folder) next to
+    the exe, not in Documents, so guessing Documents\\PCSX2 for a portable
+    setup would silently point at a folder PCSX2 never reads."""
     candidates: List[str] = []
+    if pcsx2_exe:
+        exe_dir = os.path.dirname(os.path.abspath(pcsx2_exe))
+        if os.path.isfile(os.path.join(exe_dir, "portable.ini")):
+            candidates.append(exe_dir)
     home = os.path.expanduser("~")
     candidates += [
         os.path.join(home, "Documents", "PCSX2"),                 # Windows
         os.path.join(home, ".config", "PCSX2"),                   # Linux
         os.path.join(home, "Library", "Application Support", "PCSX2"),  # macOS
-        os.path.abspath(os.path.join(os.getcwd(), "PCSX2")),       # portable
+        os.path.abspath(os.path.join(os.getcwd(), "PCSX2")),       # portable (this app's own cwd)
     ]
     return [p for p in candidates if os.path.isdir(p)]
 
@@ -5308,6 +5318,29 @@ class SettingsTab(QWidget):
             line.setText(p)
             if line is self.pcsx2_exe:
                 self._save_pcsx2_exe()
+                self._offer_portable_switch(p)
+
+    def _offer_portable_switch(self, pcsx2_exe: str):
+        """If the PCSX2 exe just picked has a portable.ini next to it, that's the
+        *real* data folder (portable installs never touch Documents\\PCSX2) --
+        offer to switch to it rather than silently leaving a possibly-wrong
+        folder configured, which would make sync write cheats PCSX2 never sees."""
+        exe_dir = os.path.dirname(os.path.abspath(pcsx2_exe))
+        if not os.path.isfile(os.path.join(exe_dir, "portable.ini")):
+            return
+        current = os.path.abspath(self.user_dir.text().strip()) if self.user_dir.text().strip() else ""
+        if os.path.normcase(current) == os.path.normcase(exe_dir):
+            return
+        reply = QMessageBox.question(
+            self, "Portable PCSX2 Detected",
+            f"This looks like a portable PCSX2 install (portable.ini found next to the exe).\n\n"
+            f"Portable installs keep cheats/textures/etc. next to the executable, not in "
+            f"Documents\\PCSX2 -- use this folder instead?\n\n{exe_dir}",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+        )
+        if reply == QMessageBox.Yes:
+            self.user_dir.setText(exe_dir)
+            self._update_subs()
 
     def _browse(self):
         d = QFileDialog.getExistingDirectory(self, "Select PCSX2 user directory", self.user_dir.text() or os.path.expanduser("~"))
@@ -5316,7 +5349,7 @@ class SettingsTab(QWidget):
             self._update_subs()
 
     def _detect(self):
-        guesses = default_pcsx2_user_dirs()
+        guesses = default_pcsx2_user_dirs(self.pcsx2_exe.text().strip())
         base = guesses[0] if guesses else os.path.join(os.path.expanduser("~"), "Documents", "PCSX2")
         self.user_dir.setText(base)
         self._update_subs()
@@ -5338,15 +5371,15 @@ class SettingsTab(QWidget):
 
     def _load_settings(self):
         s = self._qsettings()
+        saved_exe = s.value('paths/pcsx2_exe', '', str)
+        if saved_exe:
+            self.pcsx2_exe.setText(saved_exe)
         saved_dir = s.value('paths/user_dir', '', str)
         if saved_dir:
             self.user_dir.setText(saved_dir)
             self._update_subs()
         else:
             self._detect()
-        saved_exe = s.value('paths/pcsx2_exe', '', str)
-        if saved_exe:
-            self.pcsx2_exe.setText(saved_exe)
         saved_profiles = s.value('profiles/data', '', str)
         if saved_profiles:
             try:
@@ -5992,8 +6025,7 @@ class LibraryView(QWidget):
         self.detail_title.setText(game.title or game.serial)
         subtitle = game.serial + (f"   ·   CRC {game.crc}" if game.crc else "")
         self.detail_subtitle.setText(subtitle)
-        self._set_status(self.cheats_status_label, "Not synced yet")
-        self._set_status(self.textures_status_label, "Not synced yet")
+        self._refresh_installed_status(game)
         self.result_label.setText("")
         self.btn_sync.setEnabled(True)
 
@@ -6178,7 +6210,7 @@ class LibraryView(QWidget):
             elif cheats:
                 lines.append(
                     f"Cheats: {len(cheats)} code(s) from the local database will be "
-                    f"written to cheats\\{crc.upper()}.pnach."
+                    f"written to:\n{os.path.join(cheats_dir, crc.upper() + '.pnach')}"
                 )
             else:
                 lines.append("Cheats: found in the local database, but it has no codes listed.")
@@ -6198,7 +6230,7 @@ class LibraryView(QWidget):
             elif chosen_entry:
                 lines.append(
                     f"Textures: \"{chosen_entry.get('name')}\" will be downloaded from "
-                    f"{chosen_entry.get('github_repo')} and installed to textures\\{game.serial}\\."
+                    f"{chosen_entry.get('github_repo')} and installed to:\n{existing_dir}"
                 )
             else:
                 lines.append("Textures: no pack found in the community index for this game.")
@@ -6232,6 +6264,31 @@ class LibraryView(QWidget):
 
         self.btn_sync.setEnabled(True)
         self.result_label.setText(f"Cheats: {cheats_msg}\nTextures: {textures_msg}")
+
+    def _refresh_installed_status(self, game: GameEntry):
+        """Reflect what's actually on disk for this game, not just what happened
+        during this app session -- otherwise a game synced in a previous session
+        always shows "Not synced yet" again after restarting the app."""
+        paths = self.parent.state.pcsx2_paths or {}
+        cheats_dir = paths.get('cheats', '')
+        textures_dir = paths.get('textures', '')
+
+        crc = game.crc
+        if not crc:
+            local = find_local_cheats(game.serial)
+            if local:
+                crc = local[1]
+
+        if cheats_dir and self._cheats_already_installed(cheats_dir, crc):
+            self._set_status(self.cheats_status_label, "Already installed", "warning")
+        else:
+            self._set_status(self.cheats_status_label, "Not synced yet")
+
+        existing_tex_dir = os.path.join(textures_dir, game.serial) if textures_dir else ''
+        if existing_tex_dir and os.path.isdir(existing_tex_dir) and os.listdir(existing_tex_dir):
+            self._set_status(self.textures_status_label, "Already installed", "warning")
+        else:
+            self._set_status(self.textures_status_label, "Not synced yet")
 
     @staticmethod
     def _cheats_already_installed(cheats_dir: str, crc: str) -> bool:
