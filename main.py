@@ -6012,14 +6012,17 @@ class SyncDialog(QDialog):
         layout.addWidget(header)
 
         # --- Cheats ---
-        cheats_title = "Cheats -- already installed, left unchanged" if cheats_already_installed else f"Cheats ({cheat_source_note})"
+        cheats_title = "Cheats -- already installed" if cheats_already_installed else f"Cheats ({cheat_source_note})"
         cheats_grp = QGroupBox(cheats_title)
         cheats_lay = QVBoxLayout(cheats_grp)
+
+        self.cheats_overwrite_cb = None
+        cheats_content = QWidget()
+        cheats_content_lay = QVBoxLayout(cheats_content)
+        cheats_content_lay.setContentsMargins(0, 0, 0, 0)
         self.cheats_list = QListWidget()
-        if cheats_already_installed:
-            cheats_grp.setEnabled(False)
-        elif not cheat_candidates:
-            cheats_lay.addWidget(QLabel("No cheats found for this game."))
+        if not cheat_candidates:
+            cheats_content_lay.addWidget(QLabel("No cheats found for this game."))
         else:
             btn_row = QHBoxLayout()
             btn_all = QPushButton("All")
@@ -6027,7 +6030,7 @@ class SyncDialog(QDialog):
             btn_row.addWidget(btn_all)
             btn_row.addWidget(btn_none)
             btn_row.addStretch(1)
-            cheats_lay.addLayout(btn_row)
+            cheats_content_lay.addLayout(btn_row)
             for c in cheat_candidates:
                 item = QListWidgetItem(c.get('name') or 'Cheat')
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
@@ -6038,28 +6041,52 @@ class SyncDialog(QDialog):
                 self.cheats_list.addItem(item)
             btn_all.clicked.connect(lambda: self._set_all_checked(Qt.Checked))
             btn_none.clicked.connect(lambda: self._set_all_checked(Qt.Unchecked))
-        cheats_lay.addWidget(self.cheats_list)
+        cheats_content_lay.addWidget(self.cheats_list)
+
+        if cheats_already_installed:
+            note = QLabel("A cheat file already exists for this game -- left unchanged unless you opt in below.")
+            note.setObjectName(theme.OBJ_MUTED_LABEL)
+            note.setWordWrap(True)
+            cheats_lay.addWidget(note)
+            self.cheats_overwrite_cb = QCheckBox("Reinstall anyway (replaces the existing cheat file entirely)")
+            self.cheats_overwrite_cb.toggled.connect(cheats_content.setEnabled)
+            cheats_lay.addWidget(self.cheats_overwrite_cb)
+            cheats_content.setEnabled(False)
+        cheats_lay.addWidget(cheats_content)
         layout.addWidget(cheats_grp)
 
         # --- Textures ---
-        tex_title = "Texture Pack -- already installed, left unchanged" if textures_already_installed else "Texture Pack"
+        tex_title = "Texture Pack -- already installed" if textures_already_installed else "Texture Pack"
         tex_grp = QGroupBox(tex_title)
         tex_lay = QVBoxLayout(tex_grp)
+
+        self.textures_overwrite_cb = None
+        tex_content = QWidget()
+        tex_content_lay = QVBoxLayout(tex_content)
+        tex_content_lay.setContentsMargins(0, 0, 0, 0)
         self.texture_combo = QComboBox()
-        if textures_already_installed:
-            tex_grp.setEnabled(False)
+        self.texture_combo.addItem("Don't install a texture pack", None)
+        for t in texture_candidates:
+            label = t.get('name') or t.get('github_repo') or 'Pack'
+            if not t.get('verified', True):
+                label += f"  (unverified search result, {t.get('stars', 0)}★ -- {t.get('github_repo')})"
+            self.texture_combo.addItem(label, t)
+        if texture_candidates:
+            self.texture_combo.setCurrentIndex(1)
         else:
-            self.texture_combo.addItem("Don't install a texture pack", None)
-            for t in texture_candidates:
-                label = t.get('name') or t.get('github_repo') or 'Pack'
-                if not t.get('verified', True):
-                    label += f"  (unverified search result, {t.get('stars', 0)}★ -- {t.get('github_repo')})"
-                self.texture_combo.addItem(label, t)
-            if texture_candidates:
-                self.texture_combo.setCurrentIndex(1)
-            else:
-                tex_lay.addWidget(QLabel("No texture pack found."))
-        tex_lay.addWidget(self.texture_combo)
+            tex_content_lay.addWidget(QLabel("No texture pack found."))
+        tex_content_lay.addWidget(self.texture_combo)
+
+        if textures_already_installed:
+            note = QLabel("A texture pack already exists for this game -- left unchanged unless you opt in below.")
+            note.setObjectName(theme.OBJ_MUTED_LABEL)
+            note.setWordWrap(True)
+            tex_lay.addWidget(note)
+            self.textures_overwrite_cb = QCheckBox("Reinstall anyway (deletes the existing pack, then copies the new one in)")
+            self.textures_overwrite_cb.toggled.connect(tex_content.setEnabled)
+            tex_lay.addWidget(self.textures_overwrite_cb)
+            tex_content.setEnabled(False)
+        tex_lay.addWidget(tex_content)
         layout.addWidget(tex_grp)
 
         # --- Search log ---
@@ -6072,15 +6099,26 @@ class SyncDialog(QDialog):
         log_lay.addWidget(log_text)
         layout.addWidget(log_grp)
 
+        self._cheats_already_installed = cheats_already_installed
+        self._textures_already_installed = textures_already_installed
+
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        ok_btn = btns.button(QDialogButtonBox.Ok)
-        ok_btn.setText("Install Selected")
-        ok_btn.setObjectName(theme.OBJ_SUCCESS_BUTTON)
-        if cheats_already_installed and textures_already_installed:
-            ok_btn.setEnabled(False)
+        self.ok_btn = btns.button(QDialogButtonBox.Ok)
+        self.ok_btn.setText("Install Selected")
+        self.ok_btn.setObjectName(theme.OBJ_SUCCESS_BUTTON)
+        if self.cheats_overwrite_cb:
+            self.cheats_overwrite_cb.toggled.connect(self._update_ok_enabled)
+        if self.textures_overwrite_cb:
+            self.textures_overwrite_cb.toggled.connect(self._update_ok_enabled)
+        self._update_ok_enabled()
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
+
+    def _update_ok_enabled(self):
+        cheats_actionable = not self._cheats_already_installed or self.cheats_will_overwrite()
+        textures_actionable = not self._textures_already_installed or self.textures_will_overwrite()
+        self.ok_btn.setEnabled(cheats_actionable or textures_actionable)
 
     def _set_all_checked(self, state):
         for i in range(self.cheats_list.count()):
@@ -6096,6 +6134,12 @@ class SyncDialog(QDialog):
 
     def selected_texture_entry(self) -> Optional[dict]:
         return self.texture_combo.currentData()
+
+    def cheats_will_overwrite(self) -> bool:
+        return bool(self.cheats_overwrite_cb and self.cheats_overwrite_cb.isChecked())
+
+    def textures_will_overwrite(self) -> bool:
+        return bool(self.textures_overwrite_cb and self.textures_overwrite_cb.isChecked())
 
 
 class LibraryView(QWidget):
@@ -6201,6 +6245,13 @@ class LibraryView(QWidget):
 
         self.list_widget = QListWidget()
         self.list_widget.setSpacing(2)
+        # Per-item scrolling quantizes the scrollbar to the item count, which
+        # makes both wheel scrolling and dragging the scrollbar handle feel
+        # jumpy/steppy. Per-pixel scrolling makes both smooth and lets the
+        # scrollbar behave like a continuous slider instead of snapping between
+        # row positions.
+        self.list_widget.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.list_widget.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.list_widget.itemSelectionChanged.connect(self._on_selection_changed)
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._list_context_menu)
@@ -6720,23 +6771,26 @@ class LibraryView(QWidget):
         return all_codes, "from online sources", log, already
 
     def _gather_texture_candidates(self, game: GameEntry, textures_dir: str):
-        """Look up (without installing) what texture packs are available: the
-        curated manifest first, then an unverified GitHub repo search if
-        nothing curated exists. Returns (candidates, log_lines, already_installed)."""
+        """Look up what texture packs are available: the curated manifest first,
+        then an unverified GitHub repo search if nothing curated exists. Always
+        searches (even if a pack is already installed) so the "reinstall anyway"
+        option in the dialog has candidates to choose from. Returns
+        (candidates, log_lines, already_installed)."""
         existing_dir = os.path.join(textures_dir, game.serial) if textures_dir else ''
-        if existing_dir and os.path.isdir(existing_dir) and os.listdir(existing_dir):
-            return [], ["Already installed -- left unchanged."], True
+        already_installed = bool(existing_dir and os.path.isdir(existing_dir) and os.listdir(existing_dir))
 
         log = []
+        if already_installed:
+            log.append("Already installed -- searched anyway in case you want to reinstall.")
         curated = get_texture_pack_options(game.serial)
         if curated:
             log.append(f"Curated index: {len(curated)} verified option(s) found.")
-            return curated, log, False
+            return curated, log, already_installed
 
         log.append("Curated index: no entry for this game.")
         if requests is None:
             log.append("GitHub search: skipped (requests not installed).")
-            return [], log, False
+            return [], log, already_installed
         search_results, err = search_github_texture_packs(game.serial, game.title)
         if err:
             log.append(f"GitHub search: {err}")
@@ -6744,7 +6798,7 @@ class LibraryView(QWidget):
             log.append(f"GitHub search: {len(search_results)} unverified candidate(s) found -- review before installing.")
         else:
             log.append("GitHub search: nothing found.")
-        return search_results, log, False
+        return search_results, log, already_installed
 
     def _sync_selected(self):
         game = self._selected_game()
@@ -6774,7 +6828,7 @@ class LibraryView(QWidget):
             return
 
         results = []
-        if cheats_installed:
+        if cheats_installed and not dlg.cheats_will_overwrite():
             results.append("Cheats: already installed, left unchanged.")
         else:
             selected_cheats = dlg.selected_cheats()
@@ -6787,15 +6841,16 @@ class LibraryView(QWidget):
             else:
                 try:
                     write_cheats_pnach(game.title or game.serial, game.serial, game.crc, selected_cheats, cheats_dir)
+                    verb = "Reinstalled" if cheats_installed else "Installed"
                     self._set_status(self.cheats_status_label, f"{len(selected_cheats)} code(s) installed", "success")
-                    results.append(f"Cheats: installed {len(selected_cheats)} selected code(s).")
+                    results.append(f"Cheats: {verb.lower()} {len(selected_cheats)} selected code(s), replacing the whole cheat file.")
                     self._save_library()
                 except Exception as e:
                     self._set_status(self.cheats_status_label, "Error", "error")
                     logger.error(f"[LibraryView] Cheats install failed for {game.serial}: {e}")
                     results.append(f"Cheats: error -- {e}")
 
-        if textures_installed:
+        if textures_installed and not dlg.textures_will_overwrite():
             results.append("Textures: already installed, left unchanged.")
         else:
             selected_texture = dlg.selected_texture_entry()
@@ -7013,7 +7068,14 @@ class MainWindow(QMainWindow):
         though there's no visible native title bar."""
         x = ctypes.c_short(lparam & 0xFFFF).value
         y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
-        pos = self.mapFromGlobal(QPoint(x, y))
+        # WM_NCHITTEST always reports physical screen pixels, but mapFromGlobal
+        # (and every Qt geometry getter used below) works in logical/DIP pixels.
+        # On a scaled display (125%/150%/etc, the Windows default on most laptops)
+        # skipping this conversion made the resize-edge hit-test region several
+        # times wider than the visible 6px border -- wide enough to swallow clicks
+        # on real content near the window edges.
+        dpr = self.devicePixelRatioF() or 1.0
+        pos = self.mapFromGlobal(QPoint(int(x / dpr), int(y / dpr)))
         w, h = self.width(), self.height()
         m = theme.RESIZE_MARGIN
 
