@@ -22,7 +22,7 @@ from collections import deque
 import time
 import logging
 
-from PySide6.QtCore import Qt, QThread, Signal, QSize, QSettings, QTimer, QCoreApplication, QPoint, QPointF, QRectF
+from PySide6.QtCore import Qt, QThread, Signal, QSize, QSettings, QTimer, QCoreApplication, QPoint, QPointF, QRectF, QEventLoop
 import sys
 from PySide6.QtGui import QIcon, QPixmap, QDragEnterEvent, QDropEvent, QAction, QPainter, QColor, QPen
 import concurrent.futures
@@ -106,6 +106,7 @@ import cheat_online
 from cheat_online import fetch_and_cache_cheats
 import theme
 import icons
+import texture_upscale
 from bs4 import BeautifulSoup
 
 # ---------------------------- Helpers / Model ----------------------------
@@ -5401,9 +5402,19 @@ class SettingsTab(QWidget):
         self.btn_enable_textures.setMinimumHeight(35)
         self.btn_enable_textures.setToolTip("Automatically enable texture replacement in PCSX2.ini")
         self.btn_enable_textures.clicked.connect(self._toggle_textures_ini)
-        
+
+        self.btn_enable_dumping = QPushButton("Enable Texture Dumping (for AI Upscale)")
+        self.btn_enable_dumping.setMinimumHeight(35)
+        self.btn_enable_dumping.setToolTip(
+            "Lets PCSX2 save a game's original textures to disk while you play it. "
+            "The Install dialog can turn those into an AI-upscaled pack (Real-ESRGAN) "
+            "for games with no ready-made texture pack available."
+        )
+        self.btn_enable_dumping.clicked.connect(self._toggle_texture_dumping_ini)
+
         quick_layout.addWidget(self.btn_enable_cheats)
         quick_layout.addWidget(self.btn_enable_textures)
+        quick_layout.addWidget(self.btn_enable_dumping)
         quick_grp.setLayout(quick_layout)
         layout.addWidget(quick_grp)
 
@@ -5573,32 +5584,88 @@ class SettingsTab(QWidget):
             pass
 
     # INI toggles (best-effort; may vary by version)
-    def _ini_set_bool(self, ini_path: str, key: str, val: bool):
+    def _ini_set_bool(self, ini_path: str, key: str, val: bool, section: Optional[str] = None):
+        """Write a bool the way PCSX2 itself does -- confirmed against its actual
+        write path (INISettingsInterface::SetBoolValue -> SimpleIni), which always
+        serializes bools as the literal strings "true"/"false", never 1/0 or
+        enabled/disabled, under a proper [Section] header. Writing anything else
+        (as this used to) produces a line current PCSX2 simply doesn't recognize."""
         try:
-            if not os.path.isfile(ini_path): return False
-            with open(ini_path, 'r', encoding='utf-8', errors='replace') as f: lines = f.readlines()
-            found = False
+            if not os.path.isfile(ini_path):
+                return False
+            with open(ini_path, 'r', encoding='utf-8', errors='replace') as f:
+                lines = f.readlines()
+            target_line = f"{key} = {'true' if val else 'false'}\n"
+
+            if section is None:
+                for i, line in enumerate(lines):
+                    s = line.strip().lower()
+                    if s.startswith(key.lower() + "=") or s.startswith(key.lower() + " ="):
+                        lines[i] = target_line
+                        break
+                else:
+                    lines.append(target_line)
+                with open(ini_path, 'w', encoding='utf-8') as f:
+                    f.writelines(lines)
+                return True
+
+            section_header = f"[{section}]"
+            section_start = None
+            section_end = len(lines)
             for i, line in enumerate(lines):
-                if line.strip().lower().startswith(key.lower()+"="):
-                    lines[i] = f"{key}={'enabled' if val else 'disabled'}\n"
-                    found = True
+                if line.strip().lower() == section_header.lower():
+                    section_start = i
+                    section_end = len(lines)
+                    for j in range(i + 1, len(lines)):
+                        s = lines[j].strip()
+                        if s.startswith('[') and s.endswith(']'):
+                            section_end = j
+                            break
                     break
-            if not found:
-                lines.append(f"{key}={'enabled' if val else 'disabled'}\n")
-            with open(ini_path, 'w', encoding='utf-8') as f: f.writelines(lines)
+
+            if section_start is None:
+                if lines and not lines[-1].endswith('\n'):
+                    lines[-1] += '\n'
+                lines.append(f"\n{section_header}\n")
+                lines.append(target_line)
+            else:
+                key_line_idx = None
+                for i in range(section_start + 1, section_end):
+                    s = lines[i].strip().lower()
+                    if s.startswith(key.lower() + "=") or s.startswith(key.lower() + " ="):
+                        key_line_idx = i
+                        break
+                if key_line_idx is not None:
+                    lines[key_line_idx] = target_line
+                else:
+                    lines.insert(section_end, target_line)
+
+            with open(ini_path, 'w', encoding='utf-8') as f:
+                f.writelines(lines)
             return True
         except Exception:
             return False
 
     def _toggle_cheats_ini(self):
         ini = os.path.join(self.paths.get('inis',''), 'PCSX2.ini')
-        ok = self._ini_set_bool(ini, 'EnableCheats', True)
+        ok = self._ini_set_bool(ini, 'EnableCheats', True, section='EmuCore')
         QMessageBox.information(self, "Cheats", "Cheats enabled." if ok else "Could not modify INI (path/version mismatch).")
 
     def _toggle_textures_ini(self):
         ini = os.path.join(self.paths.get('inis',''), 'PCSX2.ini')
-        ok = self._ini_set_bool(ini, 'EnableTextureReplacement', True)
+        ok = self._ini_set_bool(ini, 'LoadTextureReplacements', True, section='EmuCore/GS')
         QMessageBox.information(self, "Textures", "Texture replacement enabled." if ok else "Could not modify INI (path/version mismatch).")
+
+    def _toggle_texture_dumping_ini(self):
+        ini = os.path.join(self.paths.get('inis', ''), 'PCSX2.ini')
+        ok = self._ini_set_bool(ini, 'DumpReplaceableTextures', True, section='EmuCore/GS')
+        QMessageBox.information(
+            self, "Texture Dumping",
+            ("Texture dumping enabled. Play the game briefly so PCSX2 writes its textures to "
+             "disk -- after that, the Install dialog can offer an AI upscale (Real-ESRGAN) for "
+             "it if no ready-made texture pack is found.")
+            if ok else "Could not modify INI (path/version mismatch)."
+        )
 
     def _launch_pcsx2(self):
         exe = self.pcsx2_exe.text().strip()
@@ -6001,6 +6068,34 @@ class GameListItemWidget(QWidget):
         p.drawPixmap((w - 20) // 2, (h - 20) // 2, icon_pm)
         p.end()
         self.icon_label.setPixmap(blank)
+
+
+class AIUpscaleWorker(QThread):
+    """Runs the (potentially multi-minute) Real-ESRGAN download + batch-upscale
+    off the GUI thread. LibraryView drives it with a QEventLoop so the calling
+    method can stay a plain synchronous function that returns a result string,
+    matching the rest of the install flow, while a progress dialog still
+    repaints during the wait."""
+
+    progress = Signal(str)
+    done = Signal(bool, str)
+
+    def __init__(self, src_dir: str, dst_dir: str, tools_dir: str, scale: int = 4, parent=None):
+        super().__init__(parent)
+        self.src_dir = src_dir
+        self.dst_dir = dst_dir
+        self.tools_dir = tools_dir
+        self.scale = scale
+
+    def run(self):
+        self.progress.emit("Preparing Real-ESRGAN…")
+        exe = texture_upscale.ensure_realesrgan_binary(self.tools_dir, progress_cb=self.progress.emit)
+        if not exe:
+            self.done.emit(False, "Couldn't get Real-ESRGAN (check your internet connection).")
+            return
+        self.progress.emit("Upscaling textures… this can take a few minutes for a large dump.")
+        ok, msg = texture_upscale.upscale_textures(exe, self.src_dir, self.dst_dir, scale=self.scale)
+        self.done.emit(ok, msg)
 
 
 class SyncDialog(QDialog):
@@ -6789,7 +6884,7 @@ class LibraryView(QWidget):
         searches (even if a pack is already installed) so the "reinstall anyway"
         option in the dialog has candidates to choose from. Returns
         (candidates, log_lines, already_installed)."""
-        existing_dir = os.path.join(textures_dir, game.serial) if textures_dir else ''
+        existing_dir = texture_upscale.replacement_textures_dir(textures_dir, game.serial) if textures_dir else ''
         already_installed = bool(existing_dir and os.path.isdir(existing_dir) and os.listdir(existing_dir))
 
         log = []
@@ -6801,16 +6896,26 @@ class LibraryView(QWidget):
             return curated, log, already_installed
 
         log.append("Curated index: no entry for this game.")
+        search_results = []
         if requests is None:
             log.append("GitHub search: skipped (requests not installed).")
-            return [], log, already_installed
-        search_results, err = search_github_texture_packs(game.serial, game.title)
-        if err:
-            log.append(f"GitHub search: {err}")
-        elif search_results:
-            log.append(f"GitHub search: {len(search_results)} unverified candidate(s) found -- review before installing.")
         else:
-            log.append("GitHub search: nothing found.")
+            search_results, err = search_github_texture_packs(game.serial, game.title)
+            if err:
+                log.append(f"GitHub search: {err}")
+            elif search_results:
+                log.append(f"GitHub search: {len(search_results)} unverified candidate(s) found -- review before installing.")
+            else:
+                log.append("GitHub search: nothing found.")
+
+        if not search_results and textures_dir and texture_upscale.has_dumped_textures(textures_dir, game.serial):
+            log.append("No pack found anywhere, but PCSX2 has dumped textures for this game -- "
+                        "offering an AI upscale (Real-ESRGAN) built from those instead.")
+            search_results = [{
+                'name': 'AI Upscale (Real-ESRGAN, from your dumped textures)',
+                'ai_upscale': True,
+                'verified': True,
+            }]
         return search_results, log, already_installed
 
     def _sync_selected(self):
@@ -6876,6 +6981,8 @@ class LibraryView(QWidget):
         self.result_label.setText("\n".join(results))
 
     def _install_texture_entry(self, game: GameEntry, textures_dir: str, entry: dict) -> str:
+        if entry.get('ai_upscale'):
+            return self._install_ai_upscale(game, textures_dir)
         try:
             resolved = resolve_texture_release_asset(entry)
             if not resolved or not resolved[2]:
@@ -6893,8 +7000,15 @@ class LibraryView(QWidget):
                     if chunk:
                         f.write(chunk)
 
+            # PCSX2 only loads texture replacements from <textures_dir>/<serial>/replacements/
+            # (confirmed against its GSTextureReplacements.cpp source) -- installing straight
+            # into <textures_dir>/<serial>/ instead, one level too shallow, is what this used
+            # to do, which meant PCSX2 likely never actually picked the pack up.
+            game_dir = os.path.join(textures_dir, game.serial)
             from textures_install import perform_pack_installs
-            installed, failures = perform_pack_installs([(display_name, local_zip)], textures_dir, target_hint=game.serial)
+            installed, failures = perform_pack_installs(
+                [(display_name, local_zip)], game_dir,
+                target_hint=texture_upscale.TEXTURE_REPLACEMENT_SUBDIR)
             try:
                 os.remove(local_zip)
             except Exception:
@@ -6912,6 +7026,44 @@ class LibraryView(QWidget):
             self._set_status(self.textures_status_label, "Error", "error")
             logger.error(f"[LibraryView] Textures install failed for {game.serial}: {e}")
             return f"Textures: error -- {e}"
+
+    def _install_ai_upscale(self, game: GameEntry, textures_dir: str) -> str:
+        """Batch-upscale whatever PCSX2 has already dumped for this game (its
+        own "Dump Textures" graphics option) with Real-ESRGAN, writing the
+        result straight into the replacements/ folder PCSX2 loads from."""
+        src_dir = texture_upscale.dumped_textures_dir(textures_dir, game.serial)
+        dst_dir = texture_upscale.replacement_textures_dir(textures_dir, game.serial)
+        tools_dir = os.path.join(os.path.expanduser('~'), '.pcsx2_manager_tools')
+        os.makedirs(tools_dir, exist_ok=True)
+
+        progress_dlg = QProgressDialog("Preparing Real-ESRGAN…", "", 0, 0, self)
+        progress_dlg.setWindowTitle("AI Texture Upscale")
+        progress_dlg.setWindowModality(Qt.WindowModal)
+        progress_dlg.setCancelButton(None)
+        progress_dlg.setMinimumDuration(0)
+        progress_dlg.show()
+
+        loop = QEventLoop()
+        result = {}
+        worker = AIUpscaleWorker(src_dir, dst_dir, tools_dir, parent=self)
+        worker.progress.connect(progress_dlg.setLabelText)
+
+        def _done(ok, msg):
+            result['ok'] = ok
+            result['msg'] = msg
+            loop.quit()
+
+        worker.done.connect(_done)
+        worker.start()
+        loop.exec()
+        progress_dlg.close()
+        worker.wait(2000)
+
+        if result.get('ok'):
+            self._set_status(self.textures_status_label, "AI-upscaled from dumps", "success")
+            return f"Textures: {result['msg']} (AI-upscaled from your dumped textures with Real-ESRGAN)."
+        self._set_status(self.textures_status_label, "AI upscale failed", "error")
+        return f"Textures: {result.get('msg', 'AI upscale failed.')}"
 
     def _offer_save_texture_source(self, serial: str, entry: dict, download_url: str):
         """After a successful install from an unverified GitHub search result,
@@ -6949,7 +7101,7 @@ class LibraryView(QWidget):
 
         cheats_installed = bool(cheats_dir) and self._cheats_already_installed(cheats_dir, crc)
 
-        existing_tex_dir = os.path.join(textures_dir, game.serial) if textures_dir else ''
+        existing_tex_dir = texture_upscale.replacement_textures_dir(textures_dir, game.serial) if textures_dir else ''
         textures_installed = bool(existing_tex_dir) and os.path.isdir(existing_tex_dir) and bool(os.listdir(existing_tex_dir))
 
         return cheats_installed, textures_installed
