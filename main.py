@@ -4861,624 +4861,6 @@ class TexturesTab(QWidget):
         return None
 
 
-class BulkScanWorker(QThread):
-    progressed = Signal(int, int)  # current, total
-    scanned = Signal(int, dict)    # row index, result dict (backwards compat)
-    scanned_batch = Signal(list)   # list of (row index, result dict)
-    finished = Signal()
-
-    def __init__(self, paths, parent=None):
-        super().__init__(parent)
-        self.paths = paths
-        # tune worker threads (IO+CPU mixed); cap for responsiveness
-        self.max_workers = min(8, (os.cpu_count() or 4))
-
-    def run(self):
-        total = len(self.paths)
-        results = [None] * total
-
-        def process(i, p):
-            res = {"file": p, "serials": "", "crc": "", "title": "", "status": ""}
-            try:
-                with open(p, "r", encoding="utf-8", errors="replace") as f:
-                    text = f.read()
-                pd = parse_pnach_text(text)
-                serials = pd.serials[:]
-                crc = pd.crc
-                title = pd.title or ""
-                if not serials:
-                    serials = parse_serials(text)
-                if not crc:
-                    m = re.search(r"([0-9A-Fa-f]{8})", os.path.basename(p))
-                    if m: crc = normalize_crc(m.group(1))
-                res = {
-                    "file": p,
-                    "serials": "; ".join(serials),
-                    "crc": crc or "",
-                    "title": title,
-                    "status": "parsed"
-                }
-            except Exception as e:
-                res = {"file": p, "serials": "", "crc": "", "title": "", "status": f"error: {e}"}
-            return (i, res)
-
-        # Use a thread pool to parallelize file parsing and reduce wall time on many files
-        batch = []
-        batch_size = 20
-        processed = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as ex:
-            futures = {ex.submit(process, idx, path): idx for idx, path in enumerate(self.paths)}
-            for fut in concurrent.futures.as_completed(futures):
-                idx, res = fut.result()
-                results[idx] = res
-                batch.append((idx, res))
-                processed += 1
-                # emit progress as processed/total
-                try:
-                    self.progressed.emit(processed, total)
-                except Exception:
-                    pass
-                if len(batch) >= batch_size:
-                    try:
-                        self.scanned_batch.emit(batch[:])
-                    except Exception:
-                        pass
-                    # for backwards compat, also emit individual scanned signals
-                    for ii, rr in batch:
-                        try:
-                            self.scanned.emit(ii, rr)
-                        except Exception:
-                            pass
-                    batch.clear()
-        # flush remaining
-        if batch:
-            try:
-                self.scanned_batch.emit(batch[:])
-            except Exception:
-                pass
-            for ii, rr in batch:
-                try:
-                    self.scanned.emit(ii, rr)
-                except Exception:
-                    pass
-            batch.clear()
-        # final progress ensure
-        try:
-            self.progressed.emit(total, total)
-        except Exception:
-            pass
-        self.finished.emit()
-
-
-class BulkTab(QWidget):
-    """
-    Bulk scan a set of files/folders and list:
-    File | Serial(s) | CRC | Title | Status
-    - Add Files / Add Folder / Clear
-    - Scan (parse serial/CRC)
-    - Resolve Titles (local mapping + optional offline lists + optional online)
-    - Copy Selected / Copy All / Export CSV
-    - Load in Cheats (double-click row or button)
-    """
-    ALLOWED_EXTS = (".pnach", ".txt", ".ini", ".cb", ".cbc", ".rtxt")
-
-    def __init__(self, parent: 'MainWindow'):
-        super().__init__()
-        self.parent = parent
-        self._shutting_down = False  # Flag to prevent new workers during shutdown
-        self.paths: List[str] = []
-        self.rows: List[Dict[str, str]] = []  # {"file","serials","crc","title","status"}
-        self._build_ui()
-
-    # ---------- UI ----------
-    def _build_ui(self):
-        # Create a scroll area for the entire tab content
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-        
-        # Create a container widget for all content
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(theme.SPACING_LG, theme.SPACING_LG, theme.SPACING_LG, theme.SPACING_LG)
-        layout.setSpacing(theme.SPACING_MD)
-
-        # Controls row
-        ctrl_row = QWidget()
-        h = QHBoxLayout(ctrl_row)
-        h.setContentsMargins(0, 0, 0, 0)
-        self.btn_add_files = QPushButton("Add Files…")
-        self.btn_add_files.clicked.connect(self._add_files)
-        self.btn_add_folder = QPushButton("Add Folder…")
-        self.btn_add_folder.clicked.connect(self._add_folder)
-        self.btn_clear = QPushButton("Clear")
-        self.btn_clear.clicked.connect(self._clear_all)
-        self.chk_recurse = QCheckBox("Recurse")
-        h.addWidget(self.btn_add_files)
-        h.addWidget(self.btn_add_folder)
-        h.addWidget(self.btn_clear)
-        h.addWidget(self.chk_recurse)
-        h.addStretch(1)
-        layout.addWidget(ctrl_row)
-
-        # Options row (use Cheats tab settings by default)
-        opt = QWidget()
-        oh = QHBoxLayout(opt)
-        oh.setContentsMargins(0, 0, 0, 0)
-        self.chk_offline_lists = QCheckBox("Use bundled PSXDataCenter lists (offline)")
-        self.chk_online = QCheckBox("Also try web lookup (PSXDataCenter)")
-        # mirror initial state from Cheats tab if available after MainWindow init
-        oh.addWidget(self.chk_offline_lists)
-        oh.addWidget(self.chk_online)
-        oh.addStretch(1)
-        layout.addWidget(opt)
-
-        # Search row
-        search_bar = QWidget()
-        sh = QHBoxLayout(search_bar)
-        sh.setContentsMargins(0, 0, 0, 0)
-        self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Search… (supports regex if enabled)")
-        self.search_in = QComboBox()
-        self.search_in.addItems(["All columns", "File", "Serial(s)", "CRC", "Title", "Status"])
-        self.chk_regex = QCheckBox("Regex")
-        self.btn_clear_search = QPushButton("Clear")
-        self.btn_clear_search.clicked.connect(lambda: self.search_edit.clear())
-        sh.addWidget(QLabel("Find:"))
-        sh.addWidget(self.search_edit)
-        sh.addWidget(self.search_in)
-        sh.addWidget(self.chk_regex)
-        sh.addWidget(self.btn_clear_search)
-        sh.addStretch(1)
-        layout.addWidget(search_bar)
-
-        # Debounce timer for search
-        self._search_timer = QTimer(self)
-        self._search_timer.setSingleShot(True)
-        self._search_timer.timeout.connect(self._apply_filter)
-        self.search_edit.textChanged.connect(lambda _: self._search_timer.start(200))
-        self.search_in.currentIndexChanged.connect(lambda _: self._apply_filter())
-        self.chk_regex.toggled.connect(lambda _: self._apply_filter())
-
-        # Action buttons
-        actions = QWidget()
-        ah = QHBoxLayout(actions)
-        ah.setContentsMargins(0, 0, 0, 0)
-        self.btn_scan = QPushButton("Scan")
-        self.btn_scan.clicked.connect(self._scan_files)
-        self.btn_resolve = QPushButton("Resolve Titles")
-        self.btn_resolve.clicked.connect(self._resolve_titles)
-        self.btn_copy_sel = QPushButton("Copy Selected")
-        self.btn_copy_sel.clicked.connect(self._copy_selected)
-        self.btn_copy_all = QPushButton("Copy All")
-        self.btn_copy_all.clicked.connect(self._copy_all)
-        self.btn_export = QPushButton("Export CSV…")
-        self.btn_export.clicked.connect(self._export_csv)
-        self.btn_load_cheats = QPushButton("Load in Cheats")
-        self.btn_load_cheats.clicked.connect(self._load_selected_into_cheats)
-        ah.addWidget(self.btn_scan)
-        ah.addWidget(self.btn_resolve)
-        ah.addStretch(1)
-        ah.addWidget(self.btn_copy_sel)
-        ah.addWidget(self.btn_copy_all)
-        ah.addWidget(self.btn_export)
-        ah.addWidget(self.btn_load_cheats)
-        layout.addWidget(actions)
-
-        # Progress bar
-        self.progress = QProgressBar()
-        self.progress.setMinimum(0)
-        self.progress.setMaximum(1)
-        self.progress.setValue(0)
-        layout.addWidget(self.progress)
-
-        # Table
-        self.table = QTableWidget(0, 5, self)
-        self.table.setHorizontalHeaderLabels(["File", "Serial(s)", "CRC", "Title", "Status"])
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.table.doubleClicked.connect(self._load_selected_into_cheats)
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.Interactive)  # allow user drag-resize
-        header.setStretchLastSection(False)
-        header.setMinimumSectionSize(40)
-        self.table.setColumnWidth(0, 320)  # File
-        self.table.setColumnWidth(1, 180)  # Serials
-        self.table.setColumnWidth(2, 100)  # CRC
-        self.table.setColumnWidth(3, 320)  # Title
-        self.table.setColumnWidth(4, 120)  # Status
-        layout.addWidget(self.table)
-
-        # Keep the spinbox in sync when user drags the header
-        def _on_resized(_logicalIndex, _old, _new):
-            if self.col_pick.currentIndex() == _logicalIndex:
-                self.col_width.setValue(self.table.columnWidth(_logicalIndex))
-
-        header.sectionResized.connect(_on_resized)
-
-        # Column sizing controls
-        size_row = QWidget()
-        sz = QHBoxLayout(size_row)
-        sz.setContentsMargins(0, 0, 0, 0)
-        self.col_pick = QComboBox()
-        self.col_pick.addItems(["File", "Serial(s)", "CRC", "Title", "Status"])
-        self.col_width = QSpinBox()
-        self.col_width.setRange(40, 1500)
-        self.col_width.setValue(180)
-        btn_minus = QPushButton("–")
-        btn_plus = QPushButton("+")
-        btn_auto = QPushButton("Auto")
-        sz.addWidget(QLabel("Column:"))
-        sz.addWidget(self.col_pick)
-        sz.addWidget(QLabel("Width:"))
-        sz.addWidget(self.col_width)
-        sz.addWidget(btn_minus)
-        sz.addWidget(btn_plus)
-        sz.addWidget(btn_auto)
-        sz.addStretch(1)
-        layout.addWidget(size_row)
-
-        def _apply_width():
-            c = self.col_pick.currentIndex()
-            self.table.setColumnWidth(c, int(self.col_width.value()))
-
-        btn_plus.clicked.connect(lambda: self.col_width.setValue(self.col_width.value() + 20))
-        btn_minus.clicked.connect(lambda: self.col_width.setValue(max(40, self.col_width.value() - 20)))
-        self.col_width.valueChanged.connect(lambda _: _apply_width())
-        btn_auto.clicked.connect(lambda: self.table.resizeColumnToContents(self.col_pick.currentIndex()))
-
-        # Focus search with Ctrl+F
-        find_act = QAction(self)
-        find_act.setShortcut("Ctrl+F")
-        find_act.triggered.connect(lambda: self.search_edit.setFocus())
-        self.addAction(find_act)
-        
-        # Set the container as the scroll area's widget
-        scroll.setWidget(container)
-        
-        # Set the scroll area as the main layout for this tab
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.addWidget(scroll)
-
-    def _add_files(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "Add files", os.path.expanduser("~"),
-            "Cheat/code files (*.pnach *.txt *.ini *.cb *.cbc *.rtxt);;All files (*.*)")
-        if not files: return
-        self.paths += [p for p in files if self._allowed(p)]
-        self._refresh_table_rows(new_only=True)
-
-    def _add_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Add folder", os.path.expanduser("~"))
-        if not folder: return
-        if self.chk_recurse.isChecked():
-            for root, _, files in os.walk(folder):
-                for name in files:
-                    p = os.path.join(root, name)
-                    if self._allowed(p): self.paths.append(p)
-        else:
-            for name in os.listdir(folder):
-                p = os.path.join(folder, name)
-                if os.path.isfile(p) and self._allowed(p): self.paths.append(p)
-        self._refresh_table_rows(new_only=True)
-
-    def _allowed(self, path: str) -> bool:
-        return path.lower().endswith(self.ALLOWED_EXTS)
-
-    def _clear_all(self):
-        self.paths.clear()
-        self.rows.clear()
-        self.table.setRowCount(0)
-        self.progress.setMaximum(1)
-        self.progress.setValue(0)
-
-    # ---------- Table Helpers ----------
-    def _refresh_table_rows(self, new_only=False):
-        existing_files = set(self._iter_column_values(0))
-        to_add = [p for p in self.paths if (p not in existing_files or not new_only)]
-        self.table.setSortingEnabled(False)
-        for p in to_add:
-            r = self.table.rowCount()
-            self.table.insertRow(r)
-            for c, val in enumerate([p, "", "", "", "queued"]):
-                self.table.setItem(r, c, QTableWidgetItem(val))
-        self.table.setSortingEnabled(True)
-        self._reapply_filter_after_data_change()
-
-    def _iter_column_values(self, col: int):
-        for r in range(self.table.rowCount()):
-            it = self.table.item(r, col)
-            yield it.text() if it else ""
-
-    def _set_row(self, r: int, file: str, serials: str, crc: str, title: str, status: str):
-        self.table.setItem(r, 0, QTableWidgetItem(file))
-        self.table.setItem(r, 1, QTableWidgetItem(serials))
-        self.table.setItem(r, 2, QTableWidgetItem(crc))
-        self.table.setItem(r, 3, QTableWidgetItem(title))
-        self.table.setItem(r, 4, QTableWidgetItem(status))
-
-    # ---------- Filtering ----------
-    def _apply_filter(self):
-        """Filter rows by search text over selected column(s)."""
-        text = self.search_edit.text()
-        use_regex = self.chk_regex.isChecked()
-        scope = self.search_in.currentText()  # "All columns" or specific
-
-        # Pre-compile regex or escape text
-        pattern = None
-        if text:
-            try:
-                if use_regex:
-                    pattern = re.compile(text, re.IGNORECASE)
-                else:
-                    pattern = re.compile(re.escape(text), re.IGNORECASE)
-            except re.error:
-                # invalid regex: show nothing and mark progress bar to hint
-                for r in range(self.table.rowCount()):
-                    self.table.setRowHidden(r, True)
-                self.progress.setFormat("Invalid regex")
-                return
-
-        shown = 0
-        for r in range(self.table.rowCount()):
-            # Gather text per row
-            cols = [
-                self.table.item(r, c).text() if self.table.item(r, c) else ""
-                for c in range(self.table.columnCount())
-            ]
-            if not pattern:
-                keep = True  # empty query -> show all
-            else:
-                if scope == "All columns":
-                    hay = " | ".join(cols)
-                    keep = bool(pattern.search(hay))
-                else:
-                    idx = ["File","Serial(s)","CRC","Title","Status"].index(scope)
-                    hay = cols[idx]
-                    keep = bool(pattern.search(hay))
-            self.table.setRowHidden(r, not keep)
-            if keep:
-                shown += 1
-
-        self.progress.setFormat(f"Showing {shown}/{self.table.rowCount()}")
-        # keep progress bar visible but not 'busy'
-        if self.progress.maximum() <= 1:
-                self.progress.setMaximum(1)
-                self.progress.setValue(1)
-
-    def _reapply_filter_after_data_change(self):
-        """Call after Scan or Resolve to keep current filter applied."""
-        self._apply_filter()
-
-    def _set_progress(self, current: int, total: int):
-        """Helper to update the progress bar with a percentage and counts."""
-        total = max(1, int(total or 1))
-        current = max(0, int(current or 0))
-        self.progress.setMaximum(total)
-        # clamp current to total for display
-        cur = min(current, total)
-        self.progress.setValue(cur)
-        try:
-            percent = int((cur / total) * 100)
-        except Exception:
-            percent = 0
-        self.progress.setFormat(f"{percent}% ({cur}/{total})")
-
-    # ---------- Scanning ----------
-    def _scan_files(self):
-        # Don't start new scans if shutting down
-        if getattr(self, '_shutting_down', False):
-            return
-        paths = [self.table.item(r, 0).text() for r in range(self.table.rowCount())]
-        self.progress.setMaximum(max(1, len(paths)))
-        self.progress.setValue(0)
-        self._disable_ui(True)
-        self.table.setSortingEnabled(False)
-        for r in range(self.table.rowCount()):
-            for c in range(1, 5):
-                self.table.setItem(r, c, QTableWidgetItem(""))
-        self.worker = BulkScanWorker(paths)
-        # connect progress → percent formatter
-        self.worker.progressed.connect(self._set_progress)
-        # Batched update handler to reduce UI updates
-        def on_scanned_batch(batch):
-            # batch: list of (idx, result)
-            # Sort by index to keep table stable
-            for idx, result in sorted(batch, key=lambda x: x[0]):
-                self._set_row(idx, result["file"], result["serials"], result["crc"], result["title"], result["status"])
-        self.worker.scanned_batch.connect(on_scanned_batch)
-        # Backward compat single-item signal
-        def on_scanned(idx, result):
-            self._set_row(idx, result["file"], result["serials"], result["crc"], result["title"], result["status"])
-        self.worker.scanned.connect(on_scanned)
-        def on_finished():
-            # final label and reset
-            self.progress.setMaximum(1)
-            self.progress.setValue(1)
-            self.progress.setFormat("Done")
-            self._disable_ui(False)
-            self.table.setSortingEnabled(True)
-            self._reapply_filter_after_data_change()
-        self.worker.finished.connect(on_finished)
-        self.worker.start()
-
-    def _disable_ui(self, disable: bool):
-        self.btn_add_files.setDisabled(disable)
-        self.btn_add_folder.setDisabled(disable)
-        self.btn_clear.setDisabled(disable)
-        self.chk_recurse.setDisabled(disable)
-        self.chk_offline_lists.setDisabled(disable)
-        self.chk_online.setDisabled(disable)
-        self.btn_scan.setDisabled(disable)
-        self.btn_resolve.setDisabled(disable)
-        self.btn_copy_sel.setDisabled(disable)
-        self.btn_copy_all.setDisabled(disable)
-        self.btn_export.setDisabled(disable)
-        self.btn_load_cheats.setDisabled(disable)
-
-    # ---------- Resolve Titles (batch) ----------
-    def _resolve_titles(self):
-        # Collect keys for unresolved rows
-        keys = []
-        for r in range(self.table.rowCount()):
-            title = self.table.item(r, 3).text().strip() if self.table.item(r,3) else ""
-            if title: continue
-            crc = self.table.item(r, 2).text().strip()
-            serials = (self.table.item(r, 1).text() or "").split(";")
-            # Try to extract from filename if missing
-            if not crc or not any(serials):
-                file_path = self.table.item(r, 0).text() if self.table.item(r,0) else ""
-                fname = os.path.basename(file_path)
-                # CRC: look for 8 hex digits
-                m_crc = re.search(r"([0-9A-Fa-f]{8})", fname)
-                if m_crc and not crc:
-                    crc = m_crc.group(1).upper()
-                # Serial: look for common serial pattern
-                m_serial = re.search(r"([A-Z]{4,5}[-_ ]?\d{3,5})", fname, re.IGNORECASE)
-                if m_serial and not any(serials):
-                    serials = [m_serial.group(1).replace("_", "-").upper()]
-            if crc:
-                keys.append(crc)
-            for s in [x.strip() for x in serials if x.strip()]:
-                keys.append(s)
-        # Nothing to do?
-        if not keys:
-            QMessageBox.information(self, "Resolve Titles", "Nothing to resolve: no serials or CRCs found to look up. (Did you scan files first?)")
-            return
-
-        # Kick a single ResolveWorker for the whole batch
-        worker = ResolveWorker(
-            keys=list(dict.fromkeys(keys)),  # unique preserve order
-            local_map=getattr(self.parent.cheats_tab, "mapping", {}) or {},
-            use_bundled_lists=self.chk_offline_lists.isChecked(),
-            try_online=self.chk_online.isChecked() and (requests is not None)
-        )
-        # progress → mirror into our bar (show percent)
-        self.progress.setMaximum(max(1, len(keys)))
-        self.progress.setValue(0)
-        worker.progressed.connect(self._set_progress)
-
-        def on_done(out: Dict[str,str]):
-            # Update each row’s title/CRC if available
-            for r in range(self.table.rowCount()):
-                file = self.table.item(r,0).text()
-                serials = [x.strip() for x in (self.table.item(r,1).text() or "").split(";") if x.strip()]
-                crc = (self.table.item(r,2).text() or "").strip()
-                title = (self.table.item(r,3).text() or "").strip()
-
-                # Prefer CRC title, else any serial title
-                picked_title = title
-                if not picked_title and crc and crc in out:
-                    picked_title = out[crc]
-                if not picked_title:
-                    for s in serials:
-                        if s in out:
-                            picked_title = out[s]
-                            break
-                        n = norm_serial_key(s)
-                        if n in out:
-                            picked_title = out[n]
-                            break
-
-                # Some workers also emit *_CRC — try to fill CRC if missing
-                if not crc:
-                    for s in [crc] + serials if crc else serials:
-                        if not s:
-                            continue
-                        kk = s + "_CRC"
-                        if kk in out:
-                            crc = out[kk]
-                            break
-
-                # Only mark as resolved if Title, CRC, and at least one Serial are present
-                if picked_title and crc and serials and any(serials):
-                    self._set_row(r, file, "; ".join(serials), crc, picked_title, "resolved")
-                # Otherwise, keep as-is (could optionally set a different status)
-            # small UX touch
-            self.progress.setMaximum(1)
-            self.progress.setValue(1)
-            self.progress.setFormat("Done")
-            self._reapply_filter_after_data_change()
-        worker.resolved.connect(on_done)
-        # Reuse the Cheats tab worker manager to keep thread alive
-        self.parent.cheats_tab._start_worker(worker)
-
-    # ---------- Copy / Export ----------
-    def _gather_rows(self, only_selected=False) -> List[List[str]]:
-        rows = []
-        indices = self.table.selectionModel().selectedRows() if only_selected else [self.table.model().index(r,0) for r in range(self.table.rowCount())]
-        for idx in indices:
-            r = idx.row()
-            vals = [self.table.item(r,c).text() if self.table.item(r,c) else "" for c in range(5)]
-            rows.append(vals)
-        return rows
-
-    def _copy_selected(self):
-        self._copy_rows(True)
-
-    def _copy_all(self):
-        self._copy_rows(False)
-
-    def _copy_rows(self, only_selected: bool):
-        rows = self._gather_rows(only_selected)
-        lines = ["\t".join(["File","Serial(s)","CRC","Title","Status"])]
-        for vals in rows:
-            lines.append("\t".join(vals))
-        text = "\n".join(lines)
-        QApplication.clipboard().setText(text)
-        QMessageBox.information(self, "Copied", f"Copied {'selected' if only_selected else 'all'} rows to clipboard.")
-
-    def _export_csv(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Export CSV", os.path.expanduser("~"), "CSV (*.csv)")
-        if not path: return
-        import csv
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["File","Serial(s)","CRC","Title","Status"])
-            for vals in self._gather_rows(False):
-                w.writerow(vals)
-        QMessageBox.information(self, "Export", f"Saved: {path}")
-
-    # ---------- Hand-off to Cheats ----------
-    def _load_selected_into_cheats(self):
-        sel = self.table.selectionModel().selectedRows()
-        if not sel:
-            QMessageBox.information(self, "Load in Cheats", "Select at least one row.")
-            return
-        # Load the first selected row
-        r = sel[0].row()
-        path = self.table.item(r,0).text()
-        serials = [x.strip() for x in (self.table.item(r,1).text() or "").split(";") if x.strip()]
-        crc = (self.table.item(r,2).text() or "").strip()
-        title = (self.table.item(r,3).text() or "").strip()
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                text = f.read()
-        except Exception as e:
-            QMessageBox.warning(self, "Open failed", str(e))
-            return
-
-        cheats = self.parent.cheats_tab
-        # Fill editor with content
-        cheats.codes_text.setPlainText(text)
-        # Prefer CRC from filename too
-        m = re.search(r"([0-9A-Fa-f]{8})", os.path.basename(path))
-        prefer_crc = m.group(1) if m else None
-
-        # If we already have fields from the table, set them first (then let autofill backfill missing bits)
-        if serials:
-            cheats.serial_edit.setText("; ".join(serials))
-        if crc:
-            cheats.crc_edit.setText(crc)
-        if title:
-            cheats.title_edit.setText(title)
-
-        # backfill anything missing via the same logic used elsewhere
-        cheats._autofill_from_text(text, prefer_filename_crc=prefer_crc)
-
-        # jump to Cheats tab
-        self.parent.tabs.setCurrentWidget(cheats)
-
 class SettingsTab(QWidget):
     def __init__(self, parent: 'MainWindow'):
         super().__init__()
@@ -5781,6 +5163,160 @@ class SettingsTab(QWidget):
             QMessageBox.critical(self, "Import error", str(e))
 
 
+class ResizableFrame(QWidget):
+    """Outer frame for the frameless MainWindow. Draws the visible window border
+    and lets the user resize by dragging its edges: we just tell Qt which edge
+    via QWindow.startSystemResize() and the OS window manager does the rest, so
+    native resize behavior (cursors, snapping) keeps working despite the
+    frameless hint.
+    """
+
+    MARGIN = theme.RESIZE_MARGIN
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName(theme.OBJ_APP_FRAME)
+        self.setMouseTracking(True)
+
+    def _edge_at(self, pos):
+        r = self.rect()
+        m = self.MARGIN
+        edge = Qt.Edge(0)
+        if pos.y() <= m:
+            edge |= Qt.TopEdge
+        if pos.y() >= r.height() - m:
+            edge |= Qt.BottomEdge
+        if pos.x() <= m:
+            edge |= Qt.LeftEdge
+        if pos.x() >= r.width() - m:
+            edge |= Qt.RightEdge
+        return edge if edge else None
+
+    _CURSORS = {
+        Qt.TopEdge: Qt.SizeVerCursor,
+        Qt.BottomEdge: Qt.SizeVerCursor,
+        Qt.LeftEdge: Qt.SizeHorCursor,
+        Qt.RightEdge: Qt.SizeHorCursor,
+        Qt.TopEdge | Qt.LeftEdge: Qt.SizeFDiagCursor,
+        Qt.BottomEdge | Qt.RightEdge: Qt.SizeFDiagCursor,
+        Qt.TopEdge | Qt.RightEdge: Qt.SizeBDiagCursor,
+        Qt.BottomEdge | Qt.LeftEdge: Qt.SizeBDiagCursor,
+    }
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            edge = self._edge_at(e.position().toPoint())
+            if edge:
+                wh = self.window().windowHandle()
+                if wh:
+                    wh.startSystemResize(edge)
+                    return
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        edge = self._edge_at(e.position().toPoint())
+        self.setCursor(self._CURSORS.get(edge, Qt.ArrowCursor))
+        super().mouseMoveEvent(e)
+
+
+class TitleBar(QWidget):
+    """Custom-drawn, draggable title bar replacing the native OS chrome."""
+
+    def __init__(self, window: 'MainWindow'):
+        super().__init__(window)
+        self._window = window
+        self.setObjectName(theme.OBJ_TITLE_BAR)
+        self.setFixedHeight(theme.TITLE_BAR_HEIGHT)
+        self.setMouseTracking(True)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 0, 6, 0)
+        layout.setSpacing(4)
+
+        icon_label = QLabel()
+        icon_label.setPixmap(QIcon("logo.png").pixmap(18, 18))
+        layout.addWidget(icon_label)
+
+        title_label = QLabel("PCSX2 Manager")
+        title_label.setObjectName(theme.OBJ_TITLE_BAR_LABEL)
+        layout.addWidget(title_label)
+
+        self.btn_menu = self._make_button("menu", "Menu")
+        self.btn_menu.setPopupMode(QToolButton.InstantPopup)
+        self.btn_menu.setMenu(self._window.build_app_menu())
+        layout.addWidget(self.btn_menu)
+
+        layout.addStretch(1)
+
+        self.btn_settings = self._make_button("settings", "Settings")
+        self.btn_settings.clicked.connect(self._window.open_settings_dialog)
+        layout.addWidget(self.btn_settings)
+
+        self.btn_min = self._make_button("minimize", "Minimize")
+        self.btn_min.clicked.connect(self._window.showMinimized)
+        layout.addWidget(self.btn_min)
+
+        self.btn_max = self._make_button("maximize", "Maximize")
+        self.btn_max.clicked.connect(self._toggle_maximize)
+        layout.addWidget(self.btn_max)
+
+        self.btn_close = self._make_button("close", "Close")
+        self.btn_close.setObjectName(theme.OBJ_TITLE_BAR_CLOSE_BUTTON)
+        self.btn_close.clicked.connect(self._window.close)
+        layout.addWidget(self.btn_close)
+
+    def _make_button(self, icon_name, tooltip):
+        b = QToolButton()
+        b.setIcon(icons.tab_icon(icon_name))
+        b.setToolTip(tooltip)
+        b.setObjectName(theme.OBJ_TITLE_BAR_BUTTON)
+        b.setFixedSize(30, 26)
+        b.setCursor(Qt.ArrowCursor)
+        return b
+
+    def _toggle_maximize(self):
+        if self._window.isMaximized():
+            self._window.showNormal()
+            self.btn_max.setIcon(icons.tab_icon("maximize"))
+        else:
+            self._window.showMaximized()
+            self.btn_max.setIcon(icons.tab_icon("restore"))
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            wh = self._window.windowHandle()
+            if wh:
+                if e.position().y() <= theme.RESIZE_MARGIN:
+                    wh.startSystemResize(Qt.TopEdge)
+                else:
+                    wh.startSystemMove()
+                return
+        super().mousePressEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._toggle_maximize()
+        super().mouseDoubleClickEvent(e)
+
+
+class LibraryView(QWidget):
+    """Placeholder for the library-first main screen (game scan + sync).
+
+    Being built out incrementally; for now just occupies the main content area
+    so MainWindow's new frameless/title-bar structure can be verified on its
+    own before the real library UI lands on top of it.
+    """
+
+    def __init__(self, parent: 'MainWindow'):
+        super().__init__()
+        self.parent = parent
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(theme.SPACING_LG, theme.SPACING_LG, theme.SPACING_LG, theme.SPACING_LG)
+        placeholder = QLabel("Library view coming soon…")
+        placeholder.setAlignment(Qt.AlignCenter)
+        layout.addWidget(placeholder)
+
+
 class MainWindow(QMainWindow):
     # Shared state signals: tabs subscribe instead of reaching into each other directly.
     paths_changed = Signal(dict)          # emitted with the latest PCSX2 paths dict
@@ -5792,33 +5328,50 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("PCSX2 Manager")
         self.setWindowIcon(QIcon("logo.png"))
         self.resize(1100, 750)
-        
+        self.setMinimumSize(760, 480)
+
+        # Frameless window with a custom-drawn title bar (TitleBar/ResizableFrame above)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+
         # Apply the shared dark theme (see theme.py for tokens/QSS)
         self.setStyleSheet(theme.DARK_QSS)
 
-        self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
+        frame = ResizableFrame(self)
+        outer = QVBoxLayout(frame)
+        outer.setContentsMargins(theme.RESIZE_MARGIN, 0, theme.RESIZE_MARGIN, theme.RESIZE_MARGIN)
+        outer.setSpacing(0)
 
+        self.title_bar = TitleBar(self)
+        outer.addWidget(self.title_bar)
+
+        # These are no longer shown as tabs (see LibraryView) but stay alive,
+        # unparented until opened, for the Advanced dialogs and existing
+        # paths_changed/current_game_changed signal wiring in their __init__.
         self.cheats_tab = CheatsTab(self)
-        self.bulk_tab = BulkTab(self)
         self.textures_tab = TexturesTab(self)
         self.settings_tab = SettingsTab(self)
 
-        self.tabs.addTab(self.cheats_tab, icons.tab_icon("cheats"), "Cheats")
-        self.tabs.addTab(self.textures_tab, icons.tab_icon("textures"), "Textures")
-        self.tabs.addTab(self.bulk_tab, icons.tab_icon("scan"), "Bulk Scanner")
-        self.tabs.addTab(self.settings_tab, icons.tab_icon("settings"), "Settings")
+        self.library_view = LibraryView(self)
+        outer.addWidget(self.library_view, 1)
 
-        # Mirror initial resolver options into Bulk tab for convenience
-        self.bulk_tab.chk_offline_lists.setChecked(self.cheats_tab.chk_offline_lists.isChecked())
-        if hasattr(self.cheats_tab, "chk_online"):
-            self.bulk_tab.chk_online.setChecked(self.cheats_tab.chk_online.isChecked())
+        self.setCentralWidget(frame)
 
-        self._build_menu()
         self.setAcceptDrops(True)
-        
+
         # Show welcome message on first run
         self._show_welcome_if_needed()
+
+    def open_settings_dialog(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Settings")
+        dlg.resize(640, 700)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self.settings_tab)
+        dlg.exec()
+        # Detach before the dialog is GC'd so settings_tab survives to be reopened.
+        lay.removeWidget(self.settings_tab)
+        self.settings_tab.setParent(self)
 
     def dragEnterEvent(self, e: QDragEnterEvent):
         if e.mimeData().hasUrls():
@@ -5835,17 +5388,18 @@ class MainWindow(QMainWindow):
                 self.textures_tab.dropEvent(e)
                 break
 
-    def _build_menu(self):
-        mb = self.menuBar()
-        file_menu = mb.addMenu("File")
-        exit_act = QAction("Exit", self)
-        exit_act.triggered.connect(self.close)
-        file_menu.addAction(exit_act)
-
-        help_menu = mb.addMenu("Help")
+    def build_app_menu(self) -> QMenu:
+        """Menu shown from the title bar's hamburger button, replacing the
+        native QMainWindow menu bar so the custom title bar is the only header."""
+        menu = QMenu(self)
         about_act = QAction("About", self)
         about_act.triggered.connect(self._about)
-        help_menu.addAction(about_act)
+        menu.addAction(about_act)
+        menu.addSeparator()
+        exit_act = QAction("Exit", self)
+        exit_act.triggered.connect(self.close)
+        menu.addAction(exit_act)
+        return menu
 
     def _about(self):
         QMessageBox.information(
@@ -5857,16 +5411,15 @@ class MainWindow(QMainWindow):
             "<br>"
             "<p><b>Features:</b></p>"
             "<ul>"
-            "<li>Easy cheat installation with online database</li>"
-            "<li>Automatic game detection</li>"
-            "<li>Texture pack management</li>"
+            "<li>Scan a folder to build your game library</li>"
+            "<li>One-click cheat + texture pack sync per game</li>"
+            "<li>Region-correct cheat installation with an online database</li>"
             "<li>Drag & drop support</li>"
-            "<li>Bulk game scanning</li>"
             "</ul>"
             "<br>"
-            "<p><i>Tip: Expand the 'Quick Start Guide' for help!</i></p>"
+            "<p><i>Tip: Click the gear icon in the title bar for Settings.</i></p>"
         )
-    
+
     def _show_welcome_if_needed(self):
         """Show welcome dialog on first run"""
         settings = QSettings('PCSX2-Manager', 'PatchTextureManager')
@@ -5880,10 +5433,9 @@ class MainWindow(QMainWindow):
                 "<br>"
                 "<p><b>Quick Start:</b></p>"
                 "<ol>"
-                "<li>Go to <b>Settings</b> and verify your PCSX2 folder</li>"
-                "<li>In the <b>Cheats</b> tab, enter a game serial (e.g., SLUS-12345)</li>"
-                "<li>Click <b>Fetch Online Cheats</b> to download cheats</li>"
-                "<li>Click <b>Save to PCSX2</b> to install them</li>"
+                "<li>Click the gear icon and verify your PCSX2 folder</li>"
+                "<li>Use <b>Scan Folder</b> to add the games you own to your library</li>"
+                "<li>Select a game and click <b>Sync</b> to install its cheats and textures</li>"
                 "</ol>"
                 "<br>"
                 "<p><i>Tip: You can drag & drop .pnach files and texture packs!</i></p>"
@@ -5896,17 +5448,17 @@ class MainWindow(QMainWindow):
         """Helper to clean up workers for a given tab."""
         if not hasattr(tab, '_workers'):
             return
-        
+
         for worker in list(tab._workers):
             try:
                 if not worker.isRunning():
                     continue
-                
+
                 # Request graceful quit
                 worker.quit()
                 if worker.wait(timeout_ms):
                     continue  # Successfully quit
-                
+
                 # Force terminate if still running
                 logger.warning(f"Force terminating worker: {worker.__class__.__name__}")
                 worker.terminate()
@@ -5920,34 +5472,18 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Clean up all running threads before closing."""
         logger.info("Application closing - cleaning up workers...")
-        
+
         # Set shutdown flags to prevent new workers
-        for tab_name in ['cheats_tab', 'textures_tab', 'bulk_tab']:
+        for tab_name in ['cheats_tab', 'textures_tab', 'library_view']:
             if hasattr(self, tab_name):
                 tab = getattr(self, tab_name)
                 tab._shutting_down = True
-        
-        # Clean up workers in each tab
-        if hasattr(self, 'cheats_tab'):
-            self._cleanup_workers(self.cheats_tab)
-        
-        if hasattr(self, 'textures_tab'):
-            self._cleanup_workers(self.textures_tab)
-        
-        if hasattr(self, 'bulk_tab'):
-            # Handle legacy single worker pattern
-            if hasattr(self.bulk_tab, 'worker') and self.bulk_tab.worker:
-                try:
-                    if self.bulk_tab.worker.isRunning():
-                        self.bulk_tab.worker.quit()
-                        if not self.bulk_tab.worker.wait(1000):
-                            self.bulk_tab.worker.terminate()
-                except Exception as e:
-                    logger.error(f"Error cleaning up bulk worker: {e}")
-            
-            # Handle new worker list pattern
-            self._cleanup_workers(self.bulk_tab)
-        
+
+        # Clean up workers in each widget
+        for tab_name in ['cheats_tab', 'textures_tab', 'library_view']:
+            if hasattr(self, tab_name):
+                self._cleanup_workers(getattr(self, tab_name))
+
         logger.info("Worker cleanup complete")
         event.accept()
 

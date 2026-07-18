@@ -87,16 +87,86 @@ def _settings_pixmap() -> QPixmap:
     return pm
 
 
+def _minimize_pixmap() -> QPixmap:
+    pm = _blank_pixmap()
+    p = _painter(pm)
+    p.drawLine(QPointF(6, 15), QPointF(16, 15))
+    p.end()
+    return pm
+
+
+def _maximize_pixmap() -> QPixmap:
+    pm = _blank_pixmap()
+    p = _painter(pm)
+    p.drawRoundedRect(QRectF(6, 6, 10, 10), 1.5, 1.5)
+    p.end()
+    return pm
+
+
+def _restore_pixmap() -> QPixmap:
+    pm = _blank_pixmap()
+    p = _painter(pm)
+    p.drawRoundedRect(QRectF(8.5, 5.5, 8, 8), 1.5, 1.5)
+    p.drawRoundedRect(QRectF(5.5, 8.5, 8, 8), 1.5, 1.5)
+    p.end()
+    return pm
+
+
+def _close_pixmap() -> QPixmap:
+    pm = _blank_pixmap()
+    p = _painter(pm)
+    p.drawLine(QPointF(6, 6), QPointF(16, 16))
+    p.drawLine(QPointF(16, 6), QPointF(6, 16))
+    p.end()
+    return pm
+
+
+def _add_pixmap() -> QPixmap:
+    pm = _blank_pixmap()
+    p = _painter(pm)
+    p.drawLine(QPointF(11, 5), QPointF(11, 17))
+    p.drawLine(QPointF(5, 11), QPointF(17, 11))
+    p.end()
+    return pm
+
+
+def _sync_pixmap() -> QPixmap:
+    pm = _blank_pixmap()
+    p = _painter(pm)
+    p.drawArc(QRectF(4.5, 4.5, 13, 13), 40 * 16, 260 * 16)
+    p.setBrush(_STROKE)
+    p.drawEllipse(QPointF(16.5, 6.5), 1.4, 1.4)
+    p.end()
+    return pm
+
+
+def _menu_pixmap() -> QPixmap:
+    pm = _blank_pixmap()
+    p = _painter(pm)
+    p.drawLine(QPointF(5, 7.5), QPointF(17, 7.5))
+    p.drawLine(QPointF(5, 11), QPointF(17, 11))
+    p.drawLine(QPointF(5, 14.5), QPointF(17, 14.5))
+    p.end()
+    return pm
+
+
 _BUILDERS = {
     "cheats": _cheats_pixmap,
     "textures": _textures_pixmap,
     "scan": _scan_pixmap,
     "settings": _settings_pixmap,
+    "minimize": _minimize_pixmap,
+    "maximize": _maximize_pixmap,
+    "restore": _restore_pixmap,
+    "close": _close_pixmap,
+    "add": _add_pixmap,
+    "sync": _sync_pixmap,
+    "menu": _menu_pixmap,
 }
 
 
 def tab_icon(name: str) -> QIcon:
-    """Return a QIcon for one of the known tab names ('cheats', 'textures', 'scan', 'settings')."""
+    """Return a QIcon for one of the known icon names (see _BUILDERS)."""
     builder = _BUILDERS.get(name)
     if builder is None:
         return QIcon()

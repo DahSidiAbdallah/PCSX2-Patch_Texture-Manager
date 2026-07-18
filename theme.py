@@ -43,6 +43,15 @@ OBJ_MUTED_LABEL = "mutedLabel"
 OBJ_SUCCESS_BUTTON = "successButton"
 OBJ_OVERLAY_LABEL = "overlayLabel"
 
+OBJ_APP_FRAME = "appFrame"
+OBJ_TITLE_BAR = "titleBar"
+OBJ_TITLE_BAR_LABEL = "titleBarLabel"
+OBJ_TITLE_BAR_BUTTON = "titleBarButton"
+OBJ_TITLE_BAR_CLOSE_BUTTON = "titleBarCloseButton"
+
+TITLE_BAR_HEIGHT = 38
+RESIZE_MARGIN = 6
+
 DARK_QSS = f"""
     QMainWindow {{
         background-color: {COLOR_BG};
@@ -241,5 +250,36 @@ DARK_QSS = f"""
         color: {COLOR_TEXT};
         border: 1px solid {COLOR_BORDER_STRONG};
         padding: 4px 6px;
+    }}
+    QWidget#{OBJ_APP_FRAME} {{
+        background-color: {COLOR_BG};
+        border: 1px solid {COLOR_BORDER_STRONG};
+    }}
+    QWidget#{OBJ_TITLE_BAR} {{
+        background-color: {COLOR_SURFACE};
+        border-bottom: 1px solid {COLOR_BORDER};
+    }}
+    QLabel#{OBJ_TITLE_BAR_LABEL} {{
+        color: {COLOR_TEXT};
+        font-weight: 600;
+    }}
+    QToolButton#{OBJ_TITLE_BAR_BUTTON} {{
+        background-color: transparent;
+        border: none;
+        border-radius: {RADIUS_SM}px;
+    }}
+    QToolButton#{OBJ_TITLE_BAR_BUTTON}:hover {{
+        background-color: {COLOR_SURFACE_ALT};
+    }}
+    QToolButton#{OBJ_TITLE_BAR_BUTTON}:pressed {{
+        background-color: {COLOR_BORDER_STRONG};
+    }}
+    QToolButton#{OBJ_TITLE_BAR_CLOSE_BUTTON} {{
+        background-color: transparent;
+        border: none;
+        border-radius: {RADIUS_SM}px;
+    }}
+    QToolButton#{OBJ_TITLE_BAR_CLOSE_BUTTON}:hover {{
+        background-color: {COLOR_DANGER};
     }}
 """
