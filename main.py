@@ -402,6 +402,76 @@ def build_cover_candidates(serial: str) -> List[str]:
     return [f"{_COVERS_REPO_BASE}/{v}.jpg" for v in uniq]
 
 
+def scale_and_crop_pixmap(pm: QPixmap, w: int, h: int) -> QPixmap:
+    """Scale a pixmap to fill a w x h box (may overshoot one dimension) and
+    center-crop it down to exactly w x h -- used for both the detail-panel cover
+    and the small list-row thumbnails so cover art never looks stretched."""
+    scaled = pm.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+    if scaled.width() > w or scaled.height() > h:
+        x = max(0, (scaled.width() - w) // 2)
+        y = max(0, (scaled.height() - h) // 2)
+        scaled = scaled.copy(x, y, w, h)
+    return scaled
+
+
+def cover_cache_path(serial: str, cache_dir: str) -> str:
+    return os.path.join(cache_dir, f"cover_{norm_serial_key(serial)}.jpg")
+
+
+def try_download_cover(serial: str, cache_dir: str) -> bool:
+    """Best-effort synchronous cover download for one serial (used by the bulk
+    prefetch worker, run inside a thread pool). Returns True if a file is cached
+    afterwards, whether it was already there or freshly downloaded."""
+    if requests is None:
+        return False
+    cache_path = cover_cache_path(serial, cache_dir)
+    if os.path.isfile(cache_path):
+        return True
+    for url in build_cover_candidates(serial):
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200 and resp.content:
+                os.makedirs(cache_dir, exist_ok=True)
+                with open(cache_path, 'wb') as f:
+                    f.write(resp.content)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+class CoverPrefetchWorker(QThread):
+    """Downloads covers for a whole batch of serials in the background (bounded
+    parallelism via ThreadPoolExecutor) so the library list can show real cover
+    thumbnails shortly after a scan, instead of only fetching one cover at a
+    time as the user happens to click through games."""
+
+    progressed = Signal(int, int)
+    cover_ready = Signal(str)  # serial
+    finished = Signal()
+
+    def __init__(self, serials: List[str], cache_dir: str, parent=None):
+        super().__init__(parent)
+        self.serials = serials
+        self.cache_dir = cache_dir
+
+    def run(self):
+        total = max(1, len(self.serials))
+        completed = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+            futures = {ex.submit(try_download_cover, s, self.cache_dir): s for s in self.serials}
+            for fut in concurrent.futures.as_completed(futures):
+                serial = futures[fut]
+                completed += 1
+                try:
+                    if fut.result():
+                        self.cover_ready.emit(serial)
+                except Exception:
+                    pass
+                self.progressed.emit(completed, total)
+        self.finished.emit()
+
+
 def create_cover_placeholder(serial: str = "", size: int = 420) -> QPixmap:
     """Create a placeholder pixmap for when no cover is available."""
     placeholder = QPixmap(size, size)
@@ -5648,20 +5718,23 @@ def _dict_to_entry(d: dict) -> GameEntry:
 
 
 class GameListItemWidget(QWidget):
-    """Row widget for the library list: a small disc icon + title + serial,
-    used via QListWidget.setItemWidget() instead of plain single-line text."""
+    """Row widget for the library list: a small cover thumbnail (falls back to
+    a generic disc icon until/unless a cover is cached) + title + serial, used
+    via QListWidget.setItemWidget() instead of plain single-line text."""
 
-    def __init__(self, title: str, serial: str):
+    THUMB_SIZE = (24, 32)
+
+    def __init__(self, title: str, serial: str, cover_path: Optional[str] = None):
         super().__init__()
         self.setObjectName(theme.OBJ_GAME_ROW)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(theme.SPACING_SM, theme.SPACING_XS, theme.SPACING_SM, theme.SPACING_XS)
         lay.setSpacing(theme.SPACING_SM)
 
-        icon_label = QLabel()
-        icon_label.setPixmap(icons.tab_icon("disc").pixmap(20, 20))
-        icon_label.setFixedSize(20, 20)
-        lay.addWidget(icon_label)
+        self.icon_label = QLabel()
+        self.icon_label.setFixedSize(*self.THUMB_SIZE)
+        self.set_cover(cover_path)
+        lay.addWidget(self.icon_label)
 
         text_col = QVBoxLayout()
         text_col.setContentsMargins(0, 0, 0, 0)
@@ -5673,6 +5746,23 @@ class GameListItemWidget(QWidget):
         text_col.addWidget(title_label)
         text_col.addWidget(serial_label)
         lay.addLayout(text_col, 1)
+
+    def set_cover(self, cover_path: Optional[str]):
+        w, h = self.THUMB_SIZE
+        if cover_path and os.path.isfile(cover_path):
+            pm = QPixmap(cover_path)
+            if pm and not pm.isNull():
+                self.icon_label.setPixmap(scale_and_crop_pixmap(pm, w, h))
+                return
+        # Center a small disc glyph in the same footprint so rows stay aligned
+        # whether or not a cover has been fetched yet.
+        blank = QPixmap(w, h)
+        blank.fill(Qt.transparent)
+        p = QPainter(blank)
+        icon_pm = icons.tab_icon("disc").pixmap(20, 20)
+        p.drawPixmap((w - 20) // 2, (h - 20) // 2, icon_pm)
+        p.end()
+        self.icon_label.setPixmap(blank)
 
 
 class LibraryView(QWidget):
@@ -5696,6 +5786,7 @@ class LibraryView(QWidget):
         self._build_ui()
         self._load_library()
         self._refresh_list()
+        self._prefetch_missing_covers()
 
     # ---- UI ----
     def _build_ui(self):
@@ -5861,7 +5952,8 @@ class LibraryView(QWidget):
                 continue
             item = QListWidgetItem()
             item.setData(Qt.UserRole, g.serial)
-            row = GameListItemWidget(g.title, g.serial)
+            cover_path = cover_cache_path(g.serial, self.COVER_CACHE_DIR)
+            row = GameListItemWidget(g.title, g.serial, cover_path if os.path.isfile(cover_path) else None)
             item.setSizeHint(row.sizeHint())
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, row)
@@ -5921,13 +6013,7 @@ class LibraryView(QWidget):
         if not pm or pm.isNull():
             self.cover_label.clear()
             return
-        w, h = theme.COVER_WIDTH, theme.COVER_HEIGHT
-        scaled = pm.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-        if scaled.width() > w or scaled.height() > h:
-            x = max(0, (scaled.width() - w) // 2)
-            y = max(0, (scaled.height() - h) // 2)
-            scaled = scaled.copy(x, y, w, h)
-        self.cover_label.setPixmap(scaled)
+        self.cover_label.setPixmap(scale_and_crop_pixmap(pm, theme.COVER_WIDTH, theme.COVER_HEIGHT))
 
     def _load_cover(self, game: GameEntry):
         self._cover_generation += 1
@@ -5954,6 +6040,7 @@ class LibraryView(QWidget):
             return
 
         self.cover_loading_label.setVisible(True)
+        self.cover_loading_label.raise_()  # QStackedLayout doesn't guarantee this stays on top
         worker = CoverFetchWorker(candidates, cache_path, parent=self)
 
         def _on_fetched(path):
@@ -6013,6 +6100,37 @@ class LibraryView(QWidget):
         else:
             msg = f"Found {total_files} disc image(s) in that folder, added {added} new to your library."
         QMessageBox.information(self, "Scan Complete", msg)
+        self._prefetch_missing_covers()
+
+    # ---- bulk cover prefetch (matches PCSX2's own "fetch all covers" behavior) ----
+    def _prefetch_missing_covers(self):
+        if requests is None or not self.games:
+            return
+        try:
+            os.makedirs(self.COVER_CACHE_DIR, exist_ok=True)
+        except Exception:
+            pass
+        missing = [s for s in self.games if not os.path.isfile(cover_cache_path(s, self.COVER_CACHE_DIR))]
+        if not missing:
+            return
+        worker = CoverPrefetchWorker(missing, self.COVER_CACHE_DIR, parent=self)
+        worker.cover_ready.connect(self._on_cover_prefetched)
+        self._start_worker(worker)
+
+    def _on_cover_prefetched(self, serial: str):
+        cache_path = cover_cache_path(serial, self.COVER_CACHE_DIR)
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item.data(Qt.UserRole) == serial:
+                row = self.list_widget.itemWidget(item)
+                if isinstance(row, GameListItemWidget):
+                    row.set_cover(cache_path)
+                break
+        game = self._selected_game()
+        if game and game.serial == serial:
+            pm = QPixmap(cache_path)
+            if pm and not pm.isNull():
+                self._set_cover_pixmap(pm)
 
     # ---- manual add ----
     def _add_game_manually(self):
