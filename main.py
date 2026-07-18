@@ -385,6 +385,20 @@ def norm_serial_key(s: str) -> str:
     return (s or "").upper().replace("-", "").replace("_", "").replace(" ", "")
 
 
+_REGION_BY_PREFIX = {
+    "SLUS": "NTSC-U", "SCUS": "NTSC-U", "SLUX": "NTSC-U",
+    "SLES": "PAL", "SCES": "PAL", "SLED": "PAL",
+    "SLPS": "NTSC-J", "SLPM": "NTSC-J", "SCPS": "NTSC-J", "SCAJ": "NTSC-J",
+    "SLKA": "NTSC-K", "SCKA": "NTSC-K",
+}
+
+
+def region_for_serial(serial: str) -> str:
+    """Human-readable region label (e.g. "NTSC-U") from a serial's prefix."""
+    prefix = (serial or "").split("-")[0].strip().upper()
+    return _REGION_BY_PREFIX.get(prefix, "")
+
+
 _COVERS_REPO_BASE = "https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/default"
 
 
@@ -5915,7 +5929,8 @@ class GameListItemWidget(QWidget):
 
     THUMB_SIZE = (24, 32)
 
-    def __init__(self, title: str, serial: str, cover_path: Optional[str] = None):
+    def __init__(self, title: str, serial: str, cover_path: Optional[str] = None,
+                 cheats_installed: bool = False, textures_installed: bool = False):
         super().__init__()
         self.setObjectName(theme.OBJ_GAME_ROW)
         lay = QHBoxLayout(self)
@@ -5929,14 +5944,34 @@ class GameListItemWidget(QWidget):
 
         text_col = QVBoxLayout()
         text_col.setContentsMargins(0, 0, 0, 0)
-        text_col.setSpacing(0)
+        text_col.setSpacing(1)
         title_label = QLabel(title or serial)
         title_label.setObjectName(theme.OBJ_GAME_ROW_TITLE)
-        serial_label = QLabel(serial)
+        region = region_for_serial(serial)
+        serial_text = serial + (f"   ·   {region}" if region else "")
+        serial_label = QLabel(serial_text)
         serial_label.setObjectName(theme.OBJ_MUTED_LABEL)
         text_col.addWidget(title_label)
         text_col.addWidget(serial_label)
+
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(theme.SPACING_SM)
+        status_row.addWidget(self._status_chip("Cheats", cheats_installed))
+        status_row.addWidget(self._status_chip("Textures", textures_installed))
+        status_row.addStretch(1)
+        text_col.addLayout(status_row)
+
         lay.addLayout(text_col, 1)
+
+    @staticmethod
+    def _status_chip(name: str, installed: bool) -> QLabel:
+        chip = QLabel(("✓ " if installed else "· ") + name)
+        chip.setObjectName(theme.OBJ_STATUS_SUCCESS if installed else theme.OBJ_MUTED_LABEL)
+        f = chip.font()
+        f.setPointSize(max(7, f.pointSize() - 2))
+        chip.setFont(f)
+        return chip
 
     def set_cover(self, cover_path: Optional[str]):
         w, h = self.THUMB_SIZE
@@ -5969,7 +6004,7 @@ class SyncDialog(QDialog):
                  texture_candidates: List[dict], search_log: List[str],
                  cheats_already_installed: bool, textures_already_installed: bool, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Sync {game.title or game.serial}")
+        self.setWindowTitle(f"Install {game.title or game.serial}")
         self.resize(640, 620)
 
         layout = QVBoxLayout(self)
@@ -6065,7 +6100,7 @@ class SyncDialog(QDialog):
 
 class LibraryView(QWidget):
     """The main screen: your scanned game library on the left, and on the
-    right a cover-art detail panel with a one-click "Sync" for the selected
+    right a cover-art detail panel with a one-click "Install" for the selected
     game's cheats and textures. Replaces the old Cheats/Textures/Bulk Scanner
     tabs as the primary flow.
     """
@@ -6233,7 +6268,7 @@ class LibraryView(QWidget):
         status_form.addRow("Textures:", self.textures_status_label)
         hero_text.addWidget(status_grp)
 
-        self.btn_sync = QPushButton("Sync This Game")
+        self.btn_sync = QPushButton("Install")
         self.btn_sync.setObjectName(theme.OBJ_SUCCESS_BUTTON)
         self.btn_sync.setMinimumHeight(42)
         self.btn_sync.setEnabled(False)
@@ -6339,6 +6374,7 @@ class LibraryView(QWidget):
             item.setData(Qt.UserRole, g.serial)
             cover_path = cover_cache_path(g.serial, self.COVER_CACHE_DIR)
             has_cover = os.path.isfile(cover_path)
+            cheats_installed, textures_installed = self._game_install_status(g)
             if self.view_mode == 'grid':
                 cw, ch = self._grid_cover_size
                 if has_cover:
@@ -6347,16 +6383,43 @@ class LibraryView(QWidget):
                 else:
                     icon_pm = scale_and_crop_pixmap(create_library_cover_placeholder(g.serial), cw, ch)
                 if icon_pm:
+                    if cheats_installed or textures_installed:
+                        icon_pm = self._badge_cover(icon_pm, cheats_installed, textures_installed)
                     item.setIcon(QIcon(icon_pm))
                 item.setText(g.title or g.serial)
                 item.setTextAlignment(Qt.AlignHCenter)
-                item.setToolTip(f"{g.title}\n{g.serial}")
+                region = region_for_serial(g.serial)
+                tip = f"{g.title}\n{g.serial}" + (f" · {region}" if region else "")
+                item.setToolTip(tip)
                 self.list_widget.addItem(item)
             else:
-                row = GameListItemWidget(g.title, g.serial, cover_path if has_cover else None)
+                row = GameListItemWidget(g.title, g.serial, cover_path if has_cover else None,
+                                          cheats_installed, textures_installed)
                 item.setSizeHint(row.sizeHint())
                 self.list_widget.addItem(item)
                 self.list_widget.setItemWidget(item, row)
+
+    @staticmethod
+    def _badge_cover(pm: QPixmap, cheats_installed: bool, textures_installed: bool) -> QPixmap:
+        """Draw a small install-status badge in the corner of a grid cover tile:
+        green check if both cheats and textures are installed, amber dot if only
+        one is."""
+        out = QPixmap(pm)
+        d = 18
+        x = out.width() - d - 4
+        y = out.height() - d - 4
+        color = QColor(theme.COLOR_SUCCESS) if (cheats_installed and textures_installed) else QColor(theme.COLOR_WARNING)
+        p = QPainter(out)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setBrush(color)
+        p.setPen(QColor("#1a1a1e"))
+        p.drawEllipse(x, y, d, d)
+        if cheats_installed and textures_installed:
+            p.setPen(QPen(QColor("white"), 2))
+            p.drawLine(x + 4, y + 9, x + 7, y + 13)
+            p.drawLine(x + 7, y + 13, x + 14, y + 5)
+        p.end()
+        return out
 
     def _selected_game(self) -> Optional[GameEntry]:
         items = self.list_widget.selectedItems()
@@ -6373,7 +6436,8 @@ class LibraryView(QWidget):
             return
         self.list_widget.setCurrentItem(item)
         menu = QMenu(self)
-        sync_act = menu.addAction("Sync This Game")
+        cheats_installed, textures_installed = self._game_install_status(game)
+        sync_act = menu.addAction("Re-install" if (cheats_installed or textures_installed) else "Install")
         menu.addSeparator()
         remove_act = menu.addAction("Remove from Library")
         chosen = menu.exec_(self.list_widget.mapToGlobal(pos))
@@ -6801,10 +6865,10 @@ class LibraryView(QWidget):
         if not save_texture_source(serial, clean_entry):
             QMessageBox.warning(self, "Couldn't Save", "Failed to update texture_sources.json.")
 
-    def _refresh_installed_status(self, game: GameEntry):
-        """Reflect what's actually on disk for this game, not just what happened
-        during this app session -- otherwise a game synced in a previous session
-        always shows "Not synced yet" again after restarting the app."""
+    def _game_install_status(self, game: GameEntry) -> Tuple[bool, bool]:
+        """(cheats_installed, textures_installed) from what's actually on disk --
+        shared by the detail panel, the Install button label, and the per-game
+        status badges in the library list/grid."""
         paths = self.parent.state.pcsx2_paths or {}
         cheats_dir = paths.get('cheats', '')
         textures_dir = paths.get('textures', '')
@@ -6815,16 +6879,30 @@ class LibraryView(QWidget):
             if local:
                 crc = local[1]
 
-        if cheats_dir and self._cheats_already_installed(cheats_dir, crc):
+        cheats_installed = bool(cheats_dir) and self._cheats_already_installed(cheats_dir, crc)
+
+        existing_tex_dir = os.path.join(textures_dir, game.serial) if textures_dir else ''
+        textures_installed = bool(existing_tex_dir) and os.path.isdir(existing_tex_dir) and bool(os.listdir(existing_tex_dir))
+
+        return cheats_installed, textures_installed
+
+    def _refresh_installed_status(self, game: GameEntry):
+        """Reflect what's actually on disk for this game, not just what happened
+        during this app session -- otherwise a game synced in a previous session
+        always shows "Not synced yet" again after restarting the app."""
+        cheats_installed, textures_installed = self._game_install_status(game)
+
+        if cheats_installed:
             self._set_status(self.cheats_status_label, "Already installed", "warning")
         else:
             self._set_status(self.cheats_status_label, "Not synced yet")
 
-        existing_tex_dir = os.path.join(textures_dir, game.serial) if textures_dir else ''
-        if existing_tex_dir and os.path.isdir(existing_tex_dir) and os.listdir(existing_tex_dir):
+        if textures_installed:
             self._set_status(self.textures_status_label, "Already installed", "warning")
         else:
             self._set_status(self.textures_status_label, "Not synced yet")
+
+        self.btn_sync.setText("Re-install" if (cheats_installed or textures_installed) else "Install")
 
     @staticmethod
     def _cheats_already_installed(cheats_dir: str, crc: str) -> bool:
@@ -7069,7 +7147,7 @@ class MainWindow(QMainWindow):
                 "<ol>"
                 "<li>Click the gear icon and verify your PCSX2 folder</li>"
                 "<li>Use <b>Scan Folder</b> to add the games you own to your library</li>"
-                "<li>Select a game and click <b>Sync</b> to install its cheats and textures</li>"
+                "<li>Select a game and click <b>Install</b> to install its cheats and textures</li>"
                 "</ol>"
                 "<br>"
                 "<p><i>Tip: You can drag & drop .pnach files and texture packs!</i></p>"
