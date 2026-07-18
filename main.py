@@ -22,10 +22,52 @@ from collections import deque
 import time
 import logging
 
-from PySide6.QtCore import Qt, QThread, Signal, QSize, QSettings, QTimer, QCoreApplication
+from PySide6.QtCore import Qt, QThread, Signal, QSize, QSettings, QTimer, QCoreApplication, QPoint
 import sys
 from PySide6.QtGui import QIcon, QPixmap, QDragEnterEvent, QDropEvent, QAction, QPainter, QColor, QPen
 import concurrent.futures
+
+# ---------------------------- Windows native window-chrome support ----------------------------
+# Qt's Qt.FramelessWindowHint strips the window styles Windows' own Snap feature
+# (drag-to-top-to-maximize, drag-to-edge-to-half-screen) checks for, so a purely
+# Qt-frameless window never gets Snap regardless of window-flag combinations. The
+# documented fix (used by e.g. Windows Terminal/VS Code) is the opposite approach:
+# keep the window fully native (no FramelessWindowHint at all, so WS_CAPTION/
+# WS_THICKFRAME/Snap/shadow/rounded-corners all keep working normally), then use
+# WM_NCCALCSIZE to claim the whole window rect as client area (so nothing is
+# visually drawn in the space a native title bar would occupy) and WM_NCHITTEST to
+# redirect clicks on our custom TitleBar to behave like the native caption. Only
+# engaged on win32; other platforms keep the simpler FramelessWindowHint approach.
+IS_WINDOWS = sys.platform == 'win32'
+if IS_WINDOWS:
+    import ctypes
+
+    class _RECT(ctypes.Structure):
+        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                    ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+    class _NCCALCSIZE_PARAMS(ctypes.Structure):
+        _fields_ = [("rgrc", _RECT * 3), ("lppos", ctypes.c_void_p)]
+
+    class _MSG(ctypes.Structure):
+        _fields_ = [("hwnd", ctypes.c_void_p), ("message", ctypes.c_uint),
+                    ("wParam", ctypes.c_size_t), ("lParam", ctypes.c_ssize_t),
+                    ("time", ctypes.c_ulong), ("pt_x", ctypes.c_long), ("pt_y", ctypes.c_long)]
+
+    WM_NCCALCSIZE = 0x0083
+    WM_NCHITTEST = 0x0084
+    SM_CXFRAME = 32
+    SM_CXPADDEDBORDER = 92
+    HT_CLIENT = 1
+    HT_CAPTION = 2
+    HT_LEFT = 10
+    HT_RIGHT = 11
+    HT_TOP = 12
+    HT_TOPLEFT = 13
+    HT_TOPRIGHT = 14
+    HT_BOTTOM = 15
+    HT_BOTTOMLEFT = 16
+    HT_BOTTOMRIGHT = 17
 
 # Registry to keep running QThread-based workers alive if callers don't hold a reference
 _ACTIVE_WORKERS: list = []
@@ -5701,6 +5743,10 @@ class LibraryView(QWidget):
         self.btn_sync.setEnabled(True)
         self.result_label.setText(f"Cheats: {cheats_msg}\nTextures: {textures_msg}")
 
+    @staticmethod
+    def _cheats_already_installed(cheats_dir: str, crc: str) -> bool:
+        return bool(crc) and os.path.isfile(os.path.join(cheats_dir, f"{crc.upper()}.pnach"))
+
     def _sync_cheats(self, game: GameEntry, cheats_dir: str) -> str:
         try:
             local = find_local_cheats(game.serial)
@@ -5708,6 +5754,9 @@ class LibraryView(QWidget):
                 title, crc, cheats = local
                 if crc:
                     game.crc = crc
+                if self._cheats_already_installed(cheats_dir, crc):
+                    self.cheats_status_label.setText("Already installed (left unchanged)")
+                    return "already installed -- left your existing .pnach unchanged"
                 if not cheats:
                     self.cheats_status_label.setText("No codes in local database")
                     return "no codes in the local database"
@@ -5730,6 +5779,9 @@ class LibraryView(QWidget):
             if not crc:
                 self.cheats_status_label.setText("Found online, but no CRC available")
                 return "found online, but couldn't determine a CRC to install with"
+            if self._cheats_already_installed(cheats_dir, crc):
+                self.cheats_status_label.setText("Already installed (left unchanged)")
+                return "already installed -- left your existing .pnach unchanged"
             write_cheats_pnach(game.title, game.serial, crc, codes, cheats_dir)
             self.cheats_status_label.setText(f"{len(codes)} code(s) installed (online)")
             return f"installed {len(codes)} code(s) from online sources"
@@ -5745,6 +5797,14 @@ class LibraryView(QWidget):
         if requests is None:
             self.textures_status_label.setText("Not found")
             return "no texture-pack lookup available (requests not installed)"
+
+        # perform_pack_installs() unconditionally replaces an existing target
+        # folder (textures_install.py's dst = os.path.join(base, target_hint));
+        # a one-click sync must never silently wipe an already-installed pack.
+        existing_dir = os.path.join(textures_dir, game.serial)
+        if os.path.isdir(existing_dir) and os.listdir(existing_dir):
+            self.textures_status_label.setText("Already installed (left unchanged)")
+            return "already installed -- left your existing pack unchanged"
 
         try:
             resolved = resolve_texture_pack_url(game.serial)
@@ -5811,8 +5871,11 @@ class MainWindow(QMainWindow):
         self.resize(1100, 750)
         self.setMinimumSize(760, 480)
 
-        # Frameless window with a custom-drawn title bar (TitleBar/ResizableFrame above)
-        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+        # Custom-drawn title bar (TitleBar/ResizableFrame above). On Windows we keep
+        # the window fully native (see nativeEvent()) so Snap/shadow/rounded-corners
+        # keep working; elsewhere FramelessWindowHint + manual drag/resize is used.
+        if not IS_WINDOWS:
+            self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
 
         # Apply the shared dark theme (see theme.py for tokens/QSS)
         self.setStyleSheet(theme.DARK_QSS)
@@ -5841,6 +5904,83 @@ class MainWindow(QMainWindow):
 
         # Show welcome message on first run
         self._show_welcome_if_needed()
+
+    # ---- Windows native chrome: keep Snap/shadow while hiding the native title bar ----
+    def nativeEvent(self, eventType, message):
+        if IS_WINDOWS and eventType == b'windows_generic_MSG':
+            try:
+                msg = _MSG.from_address(int(message))
+            except Exception:
+                return super().nativeEvent(eventType, message)
+
+            if msg.message == WM_NCCALCSIZE:
+                if msg.wParam:
+                    try:
+                        if self.isMaximized():
+                            # Replicate the inset Windows normally applies so a maximized
+                            # window doesn't hang off-screen / over the taskbar -- we're
+                            # claiming the whole rect as client area, so nothing else does
+                            # this for us automatically.
+                            params = _NCCALCSIZE_PARAMS.from_address(msg.lParam)
+                            border = (ctypes.windll.user32.GetSystemMetrics(SM_CXFRAME)
+                                      + ctypes.windll.user32.GetSystemMetrics(SM_CXPADDEDBORDER))
+                            params.rgrc[0].left += border
+                            params.rgrc[0].top += border
+                            params.rgrc[0].right -= border
+                            params.rgrc[0].bottom -= border
+                    except Exception:
+                        pass
+                    return True, 0
+            elif msg.message == WM_NCHITTEST:
+                try:
+                    handled, result = self._win_hit_test(msg.lParam)
+                    if handled:
+                        return True, result
+                except Exception:
+                    pass
+        return super().nativeEvent(eventType, message)
+
+    def _win_hit_test(self, lparam):
+        """Translate a WM_NCHITTEST screen point into resize-edge/caption regions
+        so Windows handles drag-move (with Snap) and edge-resize natively, even
+        though there's no visible native title bar."""
+        x = ctypes.c_short(lparam & 0xFFFF).value
+        y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
+        pos = self.mapFromGlobal(QPoint(x, y))
+        w, h = self.width(), self.height()
+        m = theme.RESIZE_MARGIN
+
+        if not self.isMaximized():
+            left = pos.x() < m
+            right = pos.x() > w - m
+            top = pos.y() < m
+            bottom = pos.y() > h - m
+            if top and left:
+                return True, HT_TOPLEFT
+            if top and right:
+                return True, HT_TOPRIGHT
+            if bottom and left:
+                return True, HT_BOTTOMLEFT
+            if bottom and right:
+                return True, HT_BOTTOMRIGHT
+            if left:
+                return True, HT_LEFT
+            if right:
+                return True, HT_RIGHT
+            if top:
+                return True, HT_TOP
+            if bottom:
+                return True, HT_BOTTOM
+
+        tb = self.title_bar
+        tb_origin = tb.mapTo(self, QPoint(0, 0))
+        local = QPoint(pos.x() - tb_origin.x(), pos.y() - tb_origin.y())
+        if 0 <= local.x() <= tb.width() and 0 <= local.y() <= tb.height():
+            child = tb.childAt(local)
+            if isinstance(child, QToolButton):
+                return False, HT_CLIENT
+            return True, HT_CAPTION
+        return False, HT_CLIENT
 
     def open_settings_dialog(self):
         self._open_widget_dialog(self.settings_tab, "Settings", size=(640, 700))
