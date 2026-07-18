@@ -379,18 +379,19 @@ _COVERS_REPO_BASE = "https://raw.githubusercontent.com/xlenore/ps2-covers/main/c
 
 
 def build_cover_candidates(serial: str) -> List[str]:
-    """Build candidate cover-art URLs to probe for a serial (normalized, original,
-    no-separators, lowercase variants), against the public xlenore/ps2-covers index."""
+    """Build candidate cover-art URLs to probe against the public xlenore/ps2-covers
+    index (the same collection PCSX2's own built-in Cover Downloader points people
+    at). Confirmed from the repo's own docs: filenames are the canonical dashed
+    serial verbatim (e.g. "SLUS-20123.jpg"), so that exact form is tried first;
+    a couple of normalized fallbacks follow in case of inconsistent entries."""
     raw = (serial or '').strip()
     sk = norm_serial_key(raw)
     variants = []
-    if sk:
-        variants.append(sk.upper())
     if raw:
         variants.append(raw.upper())
-    variants.append(raw.replace('-', '').replace('_', '').replace(' ', '').upper())
+    if sk:
+        variants.append(sk.upper())
     variants.append(raw.replace('-', '').replace('_', '').replace(' ', '').lower())
-    variants.append(sk.lower())
     seen = set()
     uniq = []
     for v in variants:
@@ -452,11 +453,17 @@ def create_cover_placeholder(serial: str = "", size: int = 420) -> QPixmap:
     return placeholder
 
 
-def create_library_cover_placeholder(serial: str = "") -> QPixmap:
+def create_library_cover_placeholder(serial: str = "", found: Optional[bool] = None) -> QPixmap:
     """Portrait, dark-themed placeholder cover for LibraryView's detail panel --
     distinct from create_cover_placeholder()'s square light-gray one (used by the
     older Cheats/Textures tab previews), which would look out of place against
-    the dark bordered cover frame here."""
+    the dark bordered cover frame here.
+
+    `found` distinguishes "haven't tried fetching yet" (None, generic) from
+    "tried and there's genuinely no cover for this serial" (False, explicit) --
+    the caller shows a separate loading overlay while a fetch is in flight, so
+    this placeholder is never shown mid-fetch.
+    """
     w, h = theme.COVER_WIDTH, theme.COVER_HEIGHT
     pm = QPixmap(w, h)
     pm.fill(QColor(theme.COLOR_SURFACE_ALT))
@@ -473,8 +480,8 @@ def create_library_cover_placeholder(serial: str = "") -> QPixmap:
         font = p.font()
         font.setPointSize(9)
         p.setFont(font)
-        p.drawText(QRectF(10, cy + 42, w - 20, 50), Qt.AlignHCenter | Qt.TextWordWrap,
-                   serial or "No cover art")
+        label = "No cover art found" if found is False else (serial or "No cover art")
+        p.drawText(QRectF(10, cy + 42, w - 20, 50), Qt.AlignHCenter | Qt.TextWordWrap, label)
         p.end()
     except Exception as e:
         logger.debug(f"[create_library_cover_placeholder] {e}")
@@ -5742,12 +5749,27 @@ class LibraryView(QWidget):
         hero = QHBoxLayout()
         hero.setSpacing(theme.SPACING_LG)
 
+        cover_stack_widget = QWidget()
+        cover_stack_widget.setFixedSize(theme.COVER_WIDTH, theme.COVER_HEIGHT)
+        cover_stack = QStackedLayout(cover_stack_widget)
+        cover_stack.setStackingMode(QStackedLayout.StackAll)
+        cover_stack.setContentsMargins(0, 0, 0, 0)
+
         self.cover_label = QLabel()
         self.cover_label.setObjectName(theme.OBJ_COVER_FRAME)
         self.cover_label.setFixedSize(theme.COVER_WIDTH, theme.COVER_HEIGHT)
         self.cover_label.setAlignment(Qt.AlignCenter)
         self.cover_label.setScaledContents(False)
-        hero.addWidget(self.cover_label, 0, Qt.AlignTop)
+        cover_stack.addWidget(self.cover_label)
+
+        self.cover_loading_label = QLabel("Loading cover…")
+        self.cover_loading_label.setObjectName(theme.OBJ_OVERLAY_LABEL)
+        self.cover_loading_label.setFixedSize(theme.COVER_WIDTH, theme.COVER_HEIGHT)
+        self.cover_loading_label.setAlignment(Qt.AlignCenter)
+        self.cover_loading_label.setVisible(False)
+        cover_stack.addWidget(self.cover_loading_label)
+
+        hero.addWidget(cover_stack_widget, 0, Qt.AlignTop)
 
         hero_text = QVBoxLayout()
         hero_text.setSpacing(theme.SPACING_XS)
@@ -5918,6 +5940,8 @@ class LibraryView(QWidget):
             pass
         cache_path = os.path.join(self.COVER_CACHE_DIR, f"cover_{serial_key}.jpg")
 
+        self.cover_loading_label.setVisible(False)
+
         if os.path.isfile(cache_path):
             pm = QPixmap(cache_path)
             if pm and not pm.isNull():
@@ -5929,16 +5953,27 @@ class LibraryView(QWidget):
         if not candidates:
             return
 
+        self.cover_loading_label.setVisible(True)
         worker = CoverFetchWorker(candidates, cache_path, parent=self)
 
         def _on_fetched(path):
             if gen != self._cover_generation:
                 return  # selection moved on since this fetch started
+            self.cover_loading_label.setVisible(False)
             pm = QPixmap(path)
             if pm and not pm.isNull():
                 self._set_cover_pixmap(pm)
+            else:
+                self._set_cover_pixmap(create_library_cover_placeholder(game.serial, found=False))
+
+        def _on_failed():
+            if gen != self._cover_generation:
+                return
+            self.cover_loading_label.setVisible(False)
+            self._set_cover_pixmap(create_library_cover_placeholder(game.serial, found=False))
 
         worker.fetched.connect(_on_fetched)
+        worker.fetch_failed.connect(_on_failed)
         self._start_worker(worker)
 
     # ---- scanning ----
@@ -6008,6 +6043,49 @@ class LibraryView(QWidget):
         self._refresh_list(self.search_box.text())
 
     # ---- sync ----
+    def _preview_sync(self, game: GameEntry, paths: dict) -> str:
+        """Describe what "Sync This Game" is actually about to do, without doing
+        any of it -- shown in a confirmation dialog so nothing installs as a
+        surprise. Local-only checks (no extra network calls beyond what a normal
+        sync would make anyway)."""
+        lines = []
+        cheats_dir = paths.get('cheats', '')
+        textures_dir = paths.get('textures', '')
+
+        local = find_local_cheats(game.serial)
+        if local:
+            title, crc, cheats = local
+            if self._cheats_already_installed(cheats_dir, crc):
+                lines.append("Cheats: already installed -- will be left unchanged.")
+            elif cheats:
+                lines.append(
+                    f"Cheats: {len(cheats)} code(s) from the local database will be "
+                    f"written to cheats\\{crc.upper()}.pnach."
+                )
+            else:
+                lines.append("Cheats: found in the local database, but it has no codes listed.")
+        else:
+            lines.append(
+                "Cheats: not in the local database -- will search online sources "
+                "(GameHacking.org, PSXDataCenter) instead."
+            )
+
+        chosen_entry = self.texture_pack_combo.currentData() if self.texture_pack_combo.count() else None
+        if not textures_dir or not os.path.isdir(textures_dir):
+            lines.append("Textures: PCSX2 textures folder isn't set -- nothing will be installed.")
+        else:
+            existing_dir = os.path.join(textures_dir, game.serial)
+            if os.path.isdir(existing_dir) and os.listdir(existing_dir):
+                lines.append("Textures: already installed -- will be left unchanged.")
+            elif chosen_entry:
+                lines.append(
+                    f"Textures: \"{chosen_entry.get('name')}\" will be downloaded from "
+                    f"{chosen_entry.get('github_repo')} and installed to textures\\{game.serial}\\."
+                )
+            else:
+                lines.append("Textures: no pack found in the community index for this game.")
+        return "\n\n".join(lines)
+
     def _sync_selected(self):
         game = self._selected_game()
         if not game:
@@ -6016,6 +6094,15 @@ class LibraryView(QWidget):
         cheats_dir = paths.get('cheats', '')
         if not cheats_dir or not os.path.isdir(cheats_dir):
             QMessageBox.warning(self, "PCSX2 Folder Not Set", "Set your PCSX2 folder in Settings (gear icon) first.")
+            return
+
+        preview = self._preview_sync(game, paths)
+        reply = QMessageBox.question(
+            self, f"Sync {game.title or game.serial}?",
+            preview + "\n\nExisting installs are never overwritten. Proceed?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
             return
 
         self.btn_sync.setEnabled(False)
