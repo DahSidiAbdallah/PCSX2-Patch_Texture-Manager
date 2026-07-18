@@ -5667,11 +5667,16 @@ class SettingsTab(QWidget):
 
 
 class ResizableFrame(QWidget):
-    """Outer frame for the frameless MainWindow. Draws the visible window border
-    and lets the user resize by dragging its edges: we just tell Qt which edge
-    via QWindow.startSystemResize() and the OS window manager does the rest, so
-    native resize behavior (cursors, snapping) keeps working despite the
-    frameless hint.
+    """Outer frame for the frameless MainWindow. On Windows the real window stays
+    fully native (see MainWindow.nativeEvent/_win_hit_test) -- WM_NCHITTEST already
+    handles resize-edge detection and the OS sets its own resize cursors, so this
+    widget's manual mouseMoveEvent/setCursor logic below must stay OFF there: with
+    both systems active at once, this one's cursor overrides would occasionally
+    "win" the race over stray hover events (e.g. the thin exposed-background strips
+    the layout margins leave between the title bar/library view and the real window
+    edge), showing a resize cursor over ordinary content with no way to clear it.
+    Only used as the fallback resize mechanism on non-Windows platforms, where the
+    window really is FramelessWindowHint and nothing else handles this.
     """
 
     MARGIN = theme.RESIZE_MARGIN
@@ -5679,7 +5684,8 @@ class ResizableFrame(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName(theme.OBJ_APP_FRAME)
-        self.setMouseTracking(True)
+        if not IS_WINDOWS:
+            self.setMouseTracking(True)
 
     def _edge_at(self, pos):
         r = self.rect()
@@ -5707,6 +5713,9 @@ class ResizableFrame(QWidget):
     }
 
     def mousePressEvent(self, e):
+        if IS_WINDOWS:
+            super().mousePressEvent(e)
+            return
         if e.button() == Qt.LeftButton:
             edge = self._edge_at(e.position().toPoint())
             if edge:
@@ -5717,6 +5726,9 @@ class ResizableFrame(QWidget):
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
+        if IS_WINDOWS:
+            super().mouseMoveEvent(e)
+            return
         edge = self._edge_at(e.position().toPoint())
         self.setCursor(self._CURSORS.get(edge, Qt.ArrowCursor))
         super().mouseMoveEvent(e)
@@ -6252,6 +6264,7 @@ class LibraryView(QWidget):
         # row positions.
         self.list_widget.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.list_widget.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.list_widget.verticalScrollBar().setSingleStep(24)
         self.list_widget.itemSelectionChanged.connect(self._on_selection_changed)
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._list_context_menu)
