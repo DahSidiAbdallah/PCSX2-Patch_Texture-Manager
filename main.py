@@ -6145,6 +6145,17 @@ class LibraryView(QWidget):
         self.search_box.textChanged.connect(self._refresh_list)
         left.addWidget(self.search_box)
 
+        sort_row = QHBoxLayout()
+        sort_row.setSpacing(theme.SPACING_SM)
+        sort_label = QLabel("Sort:")
+        sort_label.setObjectName(theme.OBJ_MUTED_LABEL)
+        sort_row.addWidget(sort_label)
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItems(["Name (A-Z)", "Name (Z-A)", "Region"])
+        self.sort_combo.currentIndexChanged.connect(lambda _i: self._refresh_list(self.search_box.text()))
+        sort_row.addWidget(self.sort_combo, 1)
+        left.addLayout(sort_row)
+
         self.library_count_label = QLabel("")
         self.library_count_label.setObjectName(theme.OBJ_MUTED_LABEL)
         left.addWidget(self.library_count_label)
@@ -6310,7 +6321,17 @@ class LibraryView(QWidget):
         self.list_widget.clear()
         ft = (filter_text or "").strip().upper()
         self.library_count_label.setText(f"{len(self.games)} game(s) in your library" if self.games else "")
-        for serial in sorted(self.games.keys(), key=lambda s: (self.games[s].title or s).upper()):
+        sort_index = self.sort_combo.currentIndex() if hasattr(self, 'sort_combo') else 0
+        if sort_index == 1:
+            key_fn = lambda s: (self.games[s].title or s).upper()
+            reverse = True
+        elif sort_index == 2:
+            key_fn = lambda s: (self.games[s].serial.split('-')[0].upper(), (self.games[s].title or s).upper())
+            reverse = False
+        else:
+            key_fn = lambda s: (self.games[s].title or s).upper()
+            reverse = False
+        for serial in sorted(self.games.keys(), key=key_fn, reverse=reverse):
             g = self.games[serial]
             if ft and ft not in (g.title or "").upper() and ft not in g.serial.upper():
                 continue
