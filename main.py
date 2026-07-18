@@ -6081,6 +6081,8 @@ class LibraryView(QWidget):
         self.games: Dict[str, GameEntry] = {}
         self._cover_generation = 0
         self.view_mode = 'list'
+        self._grid_cover_size = (theme.GRID_COVER_WIDTH, theme.GRID_COVER_HEIGHT)
+        self._grid_tile_size = (theme.GRID_TILE_WIDTH, theme.GRID_TILE_HEIGHT)
 
         self._build_ui()
         self.btn_view_list.setChecked(True)
@@ -6125,6 +6127,15 @@ class LibraryView(QWidget):
         self.btn_view_grid.setFixedSize(30, 30)
         self.btn_view_list.clicked.connect(lambda: self._set_view_mode('list'))
         self.btn_view_grid.clicked.connect(lambda: self._set_view_mode('grid'))
+
+        self.grid_zoom_slider = QSlider(Qt.Horizontal)
+        self.grid_zoom_slider.setRange(80, 220)
+        self.grid_zoom_slider.setValue(theme.GRID_COVER_WIDTH)
+        self.grid_zoom_slider.setFixedWidth(90)
+        self.grid_zoom_slider.setToolTip("Cover size")
+        self.grid_zoom_slider.setVisible(False)
+        self.grid_zoom_slider.valueChanged.connect(self._on_grid_zoom_changed)
+        toolbar.addWidget(self.grid_zoom_slider)
         toolbar.addWidget(self.btn_view_list)
         toolbar.addWidget(self.btn_view_grid)
         left.addLayout(toolbar)
@@ -6261,6 +6272,7 @@ class LibraryView(QWidget):
         self.view_mode = mode
         self.btn_view_list.setChecked(mode == 'list')
         self.btn_view_grid.setChecked(mode == 'grid')
+        self.grid_zoom_slider.setVisible(mode == 'grid')
         if mode == 'grid':
             self.left_widget.setMinimumWidth(600)
             self.left_widget.setMaximumWidth(16777215)
@@ -6271,8 +6283,8 @@ class LibraryView(QWidget):
             self.list_widget.setResizeMode(QListWidget.Adjust)
             self.list_widget.setWordWrap(True)
             self.list_widget.setSpacing(theme.SPACING_SM)
-            self.list_widget.setIconSize(QSize(theme.GRID_COVER_WIDTH, theme.GRID_COVER_HEIGHT))
-            self.list_widget.setGridSize(QSize(theme.GRID_TILE_WIDTH, theme.GRID_TILE_HEIGHT))
+            self.list_widget.setIconSize(QSize(*self._grid_cover_size))
+            self.list_widget.setGridSize(QSize(*self._grid_tile_size))
         else:
             self.left_widget.setMinimumWidth(300)
             self.left_widget.setMaximumWidth(380)
@@ -6283,6 +6295,16 @@ class LibraryView(QWidget):
             self.list_widget.setSpacing(2)
             self.list_widget.setGridSize(QSize())
         self._refresh_list(self.search_box.text())
+
+    def _on_grid_zoom_changed(self, value: int):
+        cover_w = value
+        cover_h = int(value * (theme.GRID_COVER_HEIGHT / theme.GRID_COVER_WIDTH))
+        self._grid_cover_size = (cover_w, cover_h)
+        self._grid_tile_size = (cover_w + 20, cover_h + 60)
+        if self.view_mode == 'grid':
+            self.list_widget.setIconSize(QSize(cover_w, cover_h))
+            self.list_widget.setGridSize(QSize(cover_w + 20, cover_h + 60))
+            self._refresh_list(self.search_box.text())
 
     def _refresh_list(self, filter_text: str = ""):
         self.list_widget.clear()
@@ -6297,11 +6319,12 @@ class LibraryView(QWidget):
             cover_path = cover_cache_path(g.serial, self.COVER_CACHE_DIR)
             has_cover = os.path.isfile(cover_path)
             if self.view_mode == 'grid':
+                cw, ch = self._grid_cover_size
                 if has_cover:
                     pm = QPixmap(cover_path)
-                    icon_pm = scale_and_crop_pixmap(pm, theme.GRID_COVER_WIDTH, theme.GRID_COVER_HEIGHT) if pm and not pm.isNull() else None
+                    icon_pm = scale_and_crop_pixmap(pm, cw, ch) if pm and not pm.isNull() else None
                 else:
-                    icon_pm = scale_and_crop_pixmap(create_library_cover_placeholder(g.serial), theme.GRID_COVER_WIDTH, theme.GRID_COVER_HEIGHT)
+                    icon_pm = scale_and_crop_pixmap(create_library_cover_placeholder(g.serial), cw, ch)
                 if icon_pm:
                     item.setIcon(QIcon(icon_pm))
                 item.setText(g.title or g.serial)
@@ -6501,7 +6524,7 @@ class LibraryView(QWidget):
                 if self.view_mode == 'grid':
                     pm = QPixmap(cache_path)
                     if pm and not pm.isNull():
-                        item.setIcon(QIcon(scale_and_crop_pixmap(pm, theme.GRID_COVER_WIDTH, theme.GRID_COVER_HEIGHT)))
+                        item.setIcon(QIcon(scale_and_crop_pixmap(pm, *self._grid_cover_size)))
                 else:
                     row = self.list_widget.itemWidget(item)
                     if isinstance(row, GameListItemWidget):

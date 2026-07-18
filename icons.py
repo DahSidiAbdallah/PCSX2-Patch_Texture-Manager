@@ -1,23 +1,52 @@
-"""A tiny set of tab icons drawn with QPainter instead of loading image files.
-
-Rationale: PySide6's SVG icon support depends on the optional QtSvg plugin,
-which isn't guaranteed to be present in every install (this app only depends
-on base PySide6, not PySide6-Addons). Drawing directly with QPainter/QPixmap
-uses only core Qt APIs, so it always renders regardless of what optional Qt
-modules happen to be installed, with zero added pip dependency.
+"""Icon set for the app, backed by qtawesome (bundles Material Design Icons,
+Font Awesome, etc. as vector icon fonts -- crisp at any size, no per-icon
+artwork to maintain). Falls back to the earlier hand-drawn QPainter icons if
+qtawesome isn't installed, so the app still runs without the dependency.
 """
 
 from PySide6.QtCore import Qt, QPointF, QRectF
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QPen, QColor
 
-_STROKE = QColor("#c9c9cf")
+try:
+    import qtawesome as qta
+except Exception:
+    qta = None
+
+_STROKE = "#c9c9cf"
 _SIZE = 22
+
+# Maps our internal icon names to Material Design Icons 6 glyph names.
+_MDI_NAMES = {
+    "cheats": "mdi6.gamepad-variant",
+    "textures": "mdi6.image-multiple",
+    "scan": "mdi6.magnify",
+    "settings": "mdi6.cog",
+    "minimize": "mdi6.window-minimize",
+    "maximize": "mdi6.window-maximize",
+    "restore": "mdi6.window-restore",
+    "close": "mdi6.close",
+    "add": "mdi6.plus",
+    "sync": "mdi6.sync",
+    "menu": "mdi6.menu",
+    "disc": "mdi6.disc",
+    "view_list": "mdi6.view-list",
+    "view_grid": "mdi6.view-grid",
+    "remove": "mdi6.delete-outline",
+    "folder": "mdi6.folder-open-outline",
+    "star": "mdi6.star",
+    "star_outline": "mdi6.star-outline",
+    "check": "mdi6.check-circle",
+    "warning": "mdi6.alert-circle-outline",
+    "download": "mdi6.download",
+    "refresh": "mdi6.refresh",
+    "chevron_down": "mdi6.chevron-down",
+}
 
 
 def _painter(pm: QPixmap) -> QPainter:
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
-    pen = QPen(_STROKE)
+    pen = QPen(QColor(_STROKE))
     pen.setWidthF(1.6)
     pen.setCapStyle(Qt.RoundCap)
     pen.setJoinStyle(Qt.RoundJoin)
@@ -31,6 +60,8 @@ def _blank_pixmap() -> QPixmap:
     return pm
 
 
+# ---- Hand-drawn fallbacks (used only if qtawesome is unavailable) ----
+
 def _cheats_pixmap() -> QPixmap:
     pm = _blank_pixmap()
     p = _painter(pm)
@@ -38,7 +69,7 @@ def _cheats_pixmap() -> QPixmap:
     p.drawRoundedRect(body, 4, 4)
     p.drawLine(QPointF(7, 9.5), QPointF(7, 13.5))
     p.drawLine(QPointF(5, 11.5), QPointF(9, 11.5))
-    p.setBrush(_STROKE)
+    p.setBrush(QColor(_STROKE))
     p.drawEllipse(QPointF(14.5, 10.5), 0.9, 0.9)
     p.drawEllipse(QPointF(16.5, 12.5), 0.9, 0.9)
     p.end()
@@ -49,7 +80,7 @@ def _textures_pixmap() -> QPixmap:
     pm = _blank_pixmap()
     p = _painter(pm)
     p.drawRoundedRect(QRectF(3.5, 4, 15, 14), 2, 2)
-    p.setBrush(_STROKE)
+    p.setBrush(QColor(_STROKE))
     p.drawEllipse(QPointF(8, 8.5), 1.4, 1.4)
     p.setBrush(Qt.NoBrush)
     p.drawPolyline([
@@ -134,7 +165,7 @@ def _sync_pixmap() -> QPixmap:
     pm = _blank_pixmap()
     p = _painter(pm)
     p.drawArc(QRectF(4.5, 4.5, 13, 13), 40 * 16, 260 * 16)
-    p.setBrush(_STROKE)
+    p.setBrush(QColor(_STROKE))
     p.drawEllipse(QPointF(16.5, 6.5), 1.4, 1.4)
     p.end()
     return pm
@@ -146,6 +177,15 @@ def _menu_pixmap() -> QPixmap:
     p.drawLine(QPointF(5, 7.5), QPointF(17, 7.5))
     p.drawLine(QPointF(5, 11), QPointF(17, 11))
     p.drawLine(QPointF(5, 14.5), QPointF(17, 14.5))
+    p.end()
+    return pm
+
+
+def _disc_pixmap() -> QPixmap:
+    pm = _blank_pixmap()
+    p = _painter(pm)
+    p.drawEllipse(QPointF(11, 11), 8, 8)
+    p.drawEllipse(QPointF(11, 11), 2.4, 2.4)
     p.end()
     return pm
 
@@ -169,16 +209,7 @@ def _view_grid_pixmap() -> QPixmap:
     return pm
 
 
-def _disc_pixmap() -> QPixmap:
-    pm = _blank_pixmap()
-    p = _painter(pm)
-    p.drawEllipse(QPointF(11, 11), 8, 8)
-    p.drawEllipse(QPointF(11, 11), 2.4, 2.4)
-    p.end()
-    return pm
-
-
-_BUILDERS = {
+_FALLBACK_BUILDERS = {
     "cheats": _cheats_pixmap,
     "textures": _textures_pixmap,
     "scan": _scan_pixmap,
@@ -195,10 +226,29 @@ _BUILDERS = {
     "view_grid": _view_grid_pixmap,
 }
 
+_qta_cache = {}
 
-def tab_icon(name: str) -> QIcon:
-    """Return a QIcon for one of the known icon names (see _BUILDERS)."""
-    builder = _BUILDERS.get(name)
+
+def tab_icon(name: str, color: str = _STROKE) -> QIcon:
+    """Return a QIcon for one of the known icon names (see _MDI_NAMES /
+    _FALLBACK_BUILDERS). Uses qtawesome's vector icon fonts when available
+    (crisp at any size); falls back to the hand-drawn QPainter icons if
+    qtawesome couldn't be imported."""
+    if qta is not None:
+        mdi_name = _MDI_NAMES.get(name)
+        if mdi_name:
+            cache_key = (mdi_name, color)
+            icon = _qta_cache.get(cache_key)
+            if icon is None:
+                try:
+                    icon = qta.icon(mdi_name, color=color)
+                    _qta_cache[cache_key] = icon
+                except Exception:
+                    icon = None
+            if icon is not None:
+                return icon
+
+    builder = _FALLBACK_BUILDERS.get(name)
     if builder is None:
         return QIcon()
     return QIcon(builder())
