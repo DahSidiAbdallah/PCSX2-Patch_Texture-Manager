@@ -17,6 +17,7 @@ _SIZE = 22
 
 # Maps our internal icon names to Material Design Icons 6 glyph names.
 _MDI_NAMES = {
+    "home": "mdi6.home",
     "cheats": "mdi6.gamepad-variant",
     "textures": "mdi6.image-multiple",
     "scan": "mdi6.magnify",

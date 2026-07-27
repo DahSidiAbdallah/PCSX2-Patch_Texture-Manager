@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PS2 Ring Menu</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000000; overflow: hidden; height: 100%; }
+  #scene { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+  #labels {
+    position: absolute; top: 44%; left: 60%; transform: translateY(-50%);
+    font-family: 'Segoe UI', sans-serif; color: #6f7684;
+  }
+  #labels .opt {
+    font-size: 22px; font-weight: 300; letter-spacing: 1px;
+    margin-bottom: 14px; cursor: pointer;
+    transition: color 0.25s ease, text-shadow 0.25s ease;
+  }
+  #labels .opt.selected {
+    color: #bfe9ff; font-weight: 400;
+    text-shadow: 0 0 14px rgba(94, 200, 255, 0.85), 0 0 34px rgba(94, 200, 255, 0.4);
+  }
+  #prompt {
+    position: absolute; bottom: 24px; width: 100%; text-align: center;
+    font-family: 'Segoe UI', sans-serif; color: #8a93a2; font-size: 13px;
+    letter-spacing: 1px;
+  }
+  #prompt .glyph { color: #b9c2d4; font-size: 14px; }
+  /* Generic colored-badge convention for controller face buttons (A/B/X/Y) --
+     not a reproduction of any manufacturer's button artwork/logo. */
+  .xb-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 17px; height: 17px; border-radius: 50%; font-size: 11px; font-weight: 700;
+    color: #fff; vertical-align: -3px; margin: 0 2px;
+  }
+  .xb-a { background: #1c8a2e; }
+  .xb-b { background: #d5222b; }
+</style>
+</head>
+<body>
+<div id="scene"></div>
+<div id="labels"></div>
+<div id="prompt"><span id="promptConfirm"></span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span id="promptNavigate"></span></div>
+
+<script src="qwebchannel.js"></script>
+<script>
+  window.bridge = null;
+  if (typeof qt !== 'undefined' && qt.webChannelTransport) {
+    new QWebChannel(qt.webChannelTransport, function(channel) {
+      window.bridge = channel.objects.bridge;
+    });
+  }
+</script>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { InputManager } from './input.js';
+
+// The boot "main menu": a crescent of softly glowing orbs slowly turning on
+// pure black (matched against a real reference screenshot of the PS2 menu),
+// option names listed beside it -- current one lit cyan-white, others dim.
+
+let options = [
+  { key: 'library', label: 'Library' },
+  { key: 'settings', label: 'Settings' },
+];
+let selectedIndex = 0;
+
+function prand(i) {
+  const x = Math.sin(i * 12.9898 + 78.233) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 2000);
+camera.position.set(-70, 0, 420);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x000000, 1);
+document.getElementById('scene').appendChild(renderer.domElement);
+
+function makeGlowTexture() {
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const grd = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+  grd.addColorStop(0, 'rgba(215,240,255,1)');
+  grd.addColorStop(0.25, 'rgba(120,205,255,0.85)');
+  grd.addColorStop(1, 'rgba(94,200,255,0)');
+  ctx.fillStyle = grd;
+  ctx.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(canvas);
+}
+const glowTex = makeGlowTexture();
+
+// Faint blue mist behind the ring so the black isn't completely flat.
+const mist = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: glowTex, color: 0x16243f, transparent: true, opacity: 0.5,
+  blending: THREE.AdditiveBlending, depthWrite: false,
+}));
+mist.scale.set(720, 720, 1);
+mist.position.set(0, 0, -80);
+scene.add(mist);
+
+const ringGroup = new THREE.Group();
+scene.add(ringGroup);
+
+const radius = 130;
+const dotCount = 10;
+const startAngle = 160, sweep = 220;
+
+const dots = []; // { dot, glow, phase, baseSize, baseGlow }
+for (let i = 0; i < dotCount; i++) {
+  const angle = THREE.MathUtils.degToRad(startAngle + i * (sweep / (dotCount - 1)));
+  const x = Math.cos(angle) * radius;
+  const y = Math.sin(angle) * radius;
+
+  // Varied orb sizes like the real crescent -- not perfectly uniform beads.
+  const baseSize = 4.5 + prand(i) * 3.5;
+  const dot = new THREE.Mesh(
+    new THREE.SphereGeometry(baseSize, 16, 16),
+    new THREE.MeshBasicMaterial({ color: 0xeaf6ff, transparent: true, opacity: 0.95 })
+  );
+  dot.position.set(x, y, 0);
+  ringGroup.add(dot);
+
+  const baseGlow = 34 + prand(i + 50) * 18;
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex, color: 0x6fcdff, transparent: true, opacity: 0.9,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  }));
+  glow.scale.set(baseGlow, baseGlow, 1);
+  glow.position.set(x, y, -1);
+  ringGroup.add(glow);
+
+  dots.push({ dot, glow, phase: i * 0.7, baseSize, baseGlow });
+}
+
+scene.add(new THREE.AmbientLight(0x8899ff, 0.6));
+
+// ---- Labels DOM (built from the options list) ----
+const labelsEl = document.getElementById('labels');
+function rebuildLabels() {
+  labelsEl.innerHTML = '';
+  options.forEach((opt, i) => {
+    const div = document.createElement('div');
+    div.className = 'opt' + (i === selectedIndex ? ' selected' : '');
+    div.textContent = opt.label;
+    div.id = 'opt-' + i;
+    div.addEventListener('click', () => { selectIndex(i); });
+    labelsEl.appendChild(div);
+  });
+}
+rebuildLabels();
+
+// Called from Python via page().runJavaScript() with a literal JS array
+// expression (not a JSON string) -- no parsing needed here.
+window.setOptions = function(newOptions) {
+  options = newOptions;
+  selectedIndex = 0;
+  rebuildLabels();
+};
+
+function updateLabels() {
+  options.forEach((_, i) => {
+    document.getElementById('opt-' + i).className = 'opt' + (i === selectedIndex ? ' selected' : '');
+  });
+}
+function selectIndex(i) { selectedIndex = i; updateLabels(); }
+function moveLeft() { selectIndex((selectedIndex - 1 + options.length) % options.length); }
+function moveRight() { selectIndex((selectedIndex + 1) % options.length); }
+
+// ---- Original synthesized confirm chime (not Sony's copyrighted sound) ----
+let audioCtx = null;
+function ensureAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+function playChime() {
+  ensureAudio();
+  const now = audioCtx.currentTime;
+  const notes = [523.25, 659.25, 783.99, 1046.5];
+  notes.forEach((freq, i) => {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    const t0 = now + i * 0.12;
+    gain.gain.setValueAtTime(0, t0);
+    gain.gain.linearRampToValueAtTime(0.18, t0 + 0.05);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.1);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(t0);
+    osc.stop(t0 + 1.2);
+  });
+}
+
+function confirmSel() {
+  playChime();
+  const key = options[selectedIndex].key;
+  if (window.bridge && window.bridge.chooseOption) {
+    window.bridge.chooseOption(key);
+  } else {
+    console.log('optionChosen:', key);
+  }
+}
+
+window.addEventListener('keydown', (e) => {
+  ensureAudio();
+  if (e.key === 'ArrowLeft') moveLeft();
+  else if (e.key === 'ArrowRight') moveRight();
+  else if (e.key === 'Enter') confirmSel();
+});
+document.getElementById('scene').addEventListener('click', (e) => {
+  ensureAudio();
+  const x = e.clientX / window.innerWidth;
+  if (x < 0.33) moveLeft();
+  else if (x > 0.66) moveRight();
+  else confirmSel();
+});
+
+// ---- Controller support + live keyboard/gamepad prompt switching ----
+const input = new InputManager();
+window.__input = input; // debug/verification handle only, see web/boot.html's __bootDebug
+input.onLeft(() => { moveLeft(); });
+input.onRight(() => { moveRight(); });
+input.onConfirm(() => { ensureAudio(); confirmSel(); });
+
+function renderPrompt() {
+  const confirmEl = document.getElementById('promptConfirm');
+  const navEl = document.getElementById('promptNavigate');
+  if (input.mode === 'gamepad') {
+    confirmEl.innerHTML = '<span class="xb-btn xb-a">A</span> Select';
+    navEl.innerHTML = '&#9668; &#9658; Move';
+  } else {
+    confirmEl.innerHTML = '<span class="glyph">&#9166;</span> Enter';
+    navEl.innerHTML = '<span class="glyph">&#9668; &#9658;</span> Navigate';
+  }
+}
+input.onModeChange(renderPrompt);
+renderPrompt();
+
+function animate(ts) {
+  requestAnimationFrame(animate);
+  // A full turn roughly every ~22s -- clearly visible ambient motion.
+  ringGroup.rotation.z += 0.0048;
+
+  // Each orb twinkles on its own phase: size, halo, and brightness all
+  // breathe together like the real crescent's shimmering ornaments.
+  const t = (ts || 0) / 1000;
+  dots.forEach(({ dot, glow, phase, baseGlow }) => {
+    const pulse = 1 + Math.sin(t * 1.6 + phase) * 0.24;
+    dot.scale.setScalar(pulse);
+    glow.scale.set(baseGlow * pulse, baseGlow * pulse, 1);
+    glow.material.opacity = 0.65 + Math.sin(t * 1.6 + phase) * 0.3;
+  });
+  mist.material.opacity = 0.42 + Math.sin(t * 0.5) * 0.1;
+
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

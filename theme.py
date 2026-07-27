@@ -64,21 +64,10 @@ OBJ_STATUS_SUCCESS = "statusSuccess"
 OBJ_STATUS_WARNING = "statusWarning"
 OBJ_STATUS_ERROR = "statusError"
 
-OBJ_COVER_FRAME = "coverFrame"
-OBJ_HERO_TITLE = "heroTitle"
-OBJ_GAME_ROW = "gameRow"
-OBJ_GAME_ROW_TITLE = "gameRowTitle"
-OBJ_SIDEBAR = "sidebar"
-OBJ_VIEW_TOGGLE_BUTTON = "viewToggleButton"
-
 TITLE_BAR_HEIGHT = 38
 RESIZE_MARGIN = 6
 COVER_WIDTH = 200
 COVER_HEIGHT = 266
-GRID_TILE_WIDTH = 150
-GRID_TILE_HEIGHT = 230
-GRID_COVER_WIDTH = 130
-GRID_COVER_HEIGHT = 173
 
 # Reusable gradient snippets so panels/buttons/dialogs share the same glassy
 # language instead of each spelling out qlineargradient stops separately.
@@ -355,39 +344,5 @@ DARK_QSS = f"""
     QLabel#{OBJ_STATUS_ERROR} {{
         color: {COLOR_DANGER};
         font-weight: 600;
-    }}
-    QLabel#{OBJ_COVER_FRAME} {{
-        background: {_GRAD_PANEL};
-        border: 1px solid {COLOR_BORDER_STRONG};
-        border-radius: {RADIUS_LG}px;
-    }}
-    QLabel#{OBJ_HERO_TITLE} {{
-        color: {COLOR_TEXT};
-        font-weight: 700;
-    }}
-    QWidget#{OBJ_SIDEBAR} {{
-        background: {_GRAD_PANEL};
-        border: 1px solid {COLOR_BORDER};
-        border-radius: {RADIUS_LG}px;
-    }}
-    QWidget#{OBJ_GAME_ROW} {{
-        background-color: transparent;
-        border-radius: {RADIUS_MD}px;
-    }}
-    QLabel#{OBJ_GAME_ROW_TITLE} {{
-        color: {COLOR_TEXT};
-        font-weight: 600;
-    }}
-    QToolButton#{OBJ_VIEW_TOGGLE_BUTTON} {{
-        background-color: {COLOR_SURFACE_ALT};
-        border: 1px solid {COLOR_BORDER};
-        border-radius: {RADIUS_SM}px;
-    }}
-    QToolButton#{OBJ_VIEW_TOGGLE_BUTTON}:checked {{
-        background-color: {COLOR_ACCENT};
-        border-color: {COLOR_GLOW};
-    }}
-    QToolButton#{OBJ_VIEW_TOGGLE_BUTTON}:hover:!checked {{
-        background-color: {COLOR_BORDER_STRONG};
     }}
 """

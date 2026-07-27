@@ -66,23 +66,3 @@ def fade_in(widget: QWidget, duration: int = 220):
     widget._fade_in_anim = anim
     anim.start()
     return anim
-
-
-def animate_width(widget: QWidget, start_min: int, start_max: int, end_min: int, end_max: int, duration: int = 240):
-    """Smoothly transition a widget's min/max width instead of jumping
-    instantly -- used for the sidebar resizing between list/grid view mode."""
-    widget.setMinimumWidth(start_min)
-    widget.setMaximumWidth(start_max)
-    anim_min = QPropertyAnimation(widget, b"minimumWidth", widget)
-    anim_min.setDuration(duration)
-    anim_min.setStartValue(start_min)
-    anim_min.setEndValue(end_min)
-    anim_min.setEasingCurve(QEasingCurve.OutCubic)
-    anim_max = QPropertyAnimation(widget, b"maximumWidth", widget)
-    anim_max.setDuration(duration)
-    anim_max.setStartValue(start_max)
-    anim_max.setEndValue(end_max)
-    anim_max.setEasingCurve(QEasingCurve.OutCubic)
-    widget._width_anims = (anim_min, anim_max)
-    anim_min.start()
-    anim_max.start()

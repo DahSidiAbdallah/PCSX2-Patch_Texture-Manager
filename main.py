@@ -22,9 +22,9 @@ from collections import deque
 import time
 import logging
 
-from PySide6.QtCore import Qt, QThread, Signal, QSize, QSettings, QTimer, QCoreApplication, QPoint, QPointF, QRectF, QEventLoop
+from PySide6.QtCore import Qt, QThread, Signal, QSize, QSettings, QTimer, QCoreApplication, QPoint, QPointF, QRectF, QEventLoop, QUrl
 import sys
-from PySide6.QtGui import QIcon, QPixmap, QDragEnterEvent, QDropEvent, QAction, QPainter, QColor, QPen
+from PySide6.QtGui import QIcon, QPixmap, QDragEnterEvent, QDropEvent, QAction, QPainter, QColor, QPen, QDesktopServices
 import concurrent.futures
 
 # ---------------------------- Windows native window-chrome support ----------------------------
@@ -108,6 +108,7 @@ import theme
 import icons
 import effects
 import texture_upscale
+import ps2_ui
 from bs4 import BeautifulSoup
 
 # ---------------------------- Helpers / Model ----------------------------
@@ -754,6 +755,9 @@ def write_cheats_pnach(title: str, serial: str, crc: str, cheats: List[dict], ch
 # commit introducing this) rather than assumed.
 _GITHUB_PNACH_COLLECTIONS = [
     "xs1l3n7x/pcsx2_cheats_collection/main/cheats",
+    # EU-region companion collection, same author/format/CRC-keyed layout as
+    # the above -- verified live (200 on a raw .pnach fetch) before adding.
+    "complicatiion/pcsx2_europe_cheats_collection/main/cheats",
 ]
 
 
@@ -811,10 +815,22 @@ def fetch_github_pnach_cheats(crc: str) -> List[dict]:
 
 
 # ---- Curated texture-pack manifest ----
-# texture_sources.json maps a game serial to a known community GitHub repo that
-# publishes texture packs as release assets. There is no automatic/scraped
-# texture-pack discovery -- entries are hand-verified (real repo, real release,
-# real asset) rather than guessed, so most games will honestly report "not
+# texture_sources.json maps a game serial to one or more known-good texture
+# pack sources, hand-verified (real item, real file) rather than guessed.
+# Each entry uses exactly one of these source-type fields, resolved by
+# resolve_texture_source():
+#   github_repo    -- a GitHub repo publishing the pack as a release asset
+#                      (optionally narrowed by asset_pattern, the exact
+#                      release-asset filename)
+#   archive_org_id -- an archive.org item identifier (optionally narrowed by
+#                      asset_pattern, the exact filename within that item)
+#   direct_url     -- any host that serves the archive file straight off a
+#                      plain HTTPS GET (no HTML/JS in the way)
+#   manual_url     -- a page the app can't auto-download from (JS-gated
+#                      hosts like mega.nz); opened in the browser instead of
+#                      fetched, and the user installs it themselves
+# There is no automatic/scraped discovery beyond the GitHub and Internet
+# Archive searches in this module -- most games will honestly report "not
 # found" until the manifest is extended. Users can edit the JSON file directly.
 _TEXTURE_MANIFEST_CACHE: Optional[dict] = None
 
@@ -943,24 +959,136 @@ def search_github_texture_packs(serial: str, title: str) -> Tuple[List[dict], Op
         return [], f"GitHub search failed: {e}"
 
 
+# ---- Internet Archive (archive.org) texture-pack search ----
+# archive.org's advancedsearch/metadata/download endpoints are fully public
+# and its robots.txt only disallows /control/ and /report/ -- this is a
+# straightforward, invited API call, the same trust level as the GitHub API
+# calls above, not scraping. Several other real hosts were checked and
+# deliberately NOT wired in the same way: GBAtemp and forums.pcsx2.net sit
+# behind an active Cloudflare bot challenge (bypassing that is off-limits
+# regardless of what's being fetched), and mega.nz's own robots.txt disallows
+# general bot access to exactly the /file and /folder paths a downloader would
+# need, so this app does not attempt to resolve or fetch mega.nz links itself.
+_ARCHIVE_ORG_ASSET_EXTS = ('.zip', '.7z')
+
+
+def search_archive_org_texture_packs(serial: str, title: str) -> Tuple[List[dict], Optional[str]]:
+    """Best-effort Internet Archive item search for community PCSX2 texture
+    packs. Same contract as search_github_texture_packs: candidates are
+    unverified and must be confirmed by the user, never auto-installed."""
+    if requests is None or not title:
+        return [], None
+    try:
+        resp = requests.get(
+            'https://archive.org/advancedsearch.php',
+            params={
+                'q': f'title:("{title}") AND (pcsx2 OR ps2) AND (texture OR hd)',
+                'fl[]': ['identifier', 'title', 'description'],
+                'rows': 8, 'page': 1, 'output': 'json',
+            },
+            headers={'User-Agent': 'PCSX2-Manager/1.0'}, timeout=10,
+        )
+        if resp.status_code != 200:
+            return [], f"Internet Archive search returned HTTP {resp.status_code}."
+        docs = resp.json().get('response', {}).get('docs', [])
+        candidates = []
+        for doc in docs:
+            identifier = doc.get('identifier')
+            if not identifier:
+                continue
+            desc = doc.get('description') or ''
+            if isinstance(desc, list):
+                desc = ' '.join(desc)
+            candidates.append({
+                'name': doc.get('title') or identifier,
+                'archive_org_id': identifier,
+                'description': desc[:200],
+                'url': f'https://archive.org/details/{identifier}',
+                'verified': False,
+            })
+        return candidates[:6], None
+    except Exception as e:
+        logger.debug(f"[textures] Internet Archive search failed: {e}")
+        return [], f"Internet Archive search failed: {e}"
+
+
+def resolve_archive_org_asset(identifier: str, asset_pattern: str = '') -> Optional[Tuple[str, str, str]]:
+    """Resolve an Internet Archive item to a direct download URL for its
+    packaged texture pack (.zip/.7z -- the two formats perform_pack_installs()
+    can actually extract; a .rar-only item resolves to None rather than
+    handing back a file nothing downstream can open). Same return shape as
+    resolve_texture_release_asset(): (display_name, source_label, download_url)."""
+    if requests is None or not identifier:
+        return None
+    try:
+        resp = requests.get(
+            f'https://archive.org/metadata/{identifier}',
+            headers={'User-Agent': 'PCSX2-Manager/1.0'}, timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        files = data.get('files', [])
+        pat = asset_pattern.lower()
+        chosen = None
+        for f in files:
+            name = f.get('name', '')
+            if pat and name.lower() == pat:
+                chosen = name
+                break
+        if not chosen:
+            for f in files:
+                name = f.get('name', '')
+                if name.lower().endswith(_ARCHIVE_ORG_ASSET_EXTS):
+                    chosen = name
+                    break
+        if not chosen:
+            return None
+        display = (data.get('metadata') or {}).get('title') or identifier
+        from urllib.parse import quote
+        url = f'https://archive.org/download/{identifier}/{quote(chosen)}'
+        return display, identifier, url
+    except Exception as e:
+        logger.warning(f"[textures] Failed to resolve Internet Archive item {identifier}: {e}")
+        return None
+
+
+def resolve_texture_source(entry: dict) -> Optional[Tuple[str, str, str]]:
+    """Dispatch a texture-pack candidate (curated, GitHub search, or Internet
+    Archive search) to the resolver matching its source type. Returns
+    (display_name, source_label, download_url), or None if it can't be
+    resolved to something installable."""
+    if not entry:
+        return None
+    if entry.get('archive_org_id'):
+        return resolve_archive_org_asset(entry['archive_org_id'], entry.get('asset_pattern', ''))
+    if entry.get('direct_url'):
+        return entry.get('name') or 'Direct Download', 'direct', entry['direct_url']
+    if entry.get('github_repo'):
+        return resolve_texture_release_asset(entry)
+    return None
+
+
 def save_texture_source(serial: str, entry: dict) -> bool:
     """Persist a confirmed-working texture-pack entry into texture_sources.json
     so it's a verified curated option next time instead of needing to be
-    rediscovered via GitHub search. Returns True on success."""
+    rediscovered via search. `entry` should already be shaped for exactly one
+    source type (github_repo, archive_org_id, or direct_url -- see
+    _offer_save_texture_source()). Returns True on success."""
     global _TEXTURE_MANIFEST_CACHE
     path = os.path.join(os.path.dirname(__file__), 'texture_sources.json')
     try:
         manifest = dict(_load_texture_manifest())
         key = serial.upper()
         existing = list(manifest.get(key, []))
-        repo = entry.get('github_repo')
-        if any(e.get('github_repo') == repo for e in existing):
+        source_id = entry.get('github_repo') or entry.get('archive_org_id') or entry.get('direct_url')
+
+        def _source_id(e):
+            return e.get('github_repo') or e.get('archive_org_id') or e.get('direct_url')
+
+        if any(_source_id(e) == source_id for e in existing):
             return True
-        existing.append({
-            'name': entry.get('name') or repo,
-            'github_repo': repo,
-            'asset_pattern': entry.get('asset_pattern', ''),
-        })
+        existing.append(entry)
         manifest[key] = existing
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
@@ -5831,6 +5959,10 @@ class TitleBar(QWidget):
 
         layout.addStretch(1)
 
+        self.btn_home = self._make_button("home", "Back to Main Menu")
+        self.btn_home.clicked.connect(self._window.show_ring_menu)
+        layout.addWidget(self.btn_home)
+
         self.btn_settings = self._make_button("settings", "Settings")
         self.btn_settings.clicked.connect(self._window.open_settings_dialog)
         layout.addWidget(self.btn_settings)
@@ -6002,75 +6134,6 @@ def _dict_to_entry(d: dict) -> GameEntry:
     )
 
 
-class GameListItemWidget(QWidget):
-    """Row widget for the library list: a small cover thumbnail (falls back to
-    a generic disc icon until/unless a cover is cached) + title + serial, used
-    via QListWidget.setItemWidget() instead of plain single-line text."""
-
-    THUMB_SIZE = (24, 32)
-
-    def __init__(self, title: str, serial: str, cover_path: Optional[str] = None,
-                 cheats_installed: bool = False, textures_installed: bool = False):
-        super().__init__()
-        self.setObjectName(theme.OBJ_GAME_ROW)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(theme.SPACING_SM, theme.SPACING_XS, theme.SPACING_SM, theme.SPACING_XS)
-        lay.setSpacing(theme.SPACING_SM)
-
-        self.icon_label = QLabel()
-        self.icon_label.setFixedSize(*self.THUMB_SIZE)
-        self.set_cover(cover_path)
-        lay.addWidget(self.icon_label)
-
-        text_col = QVBoxLayout()
-        text_col.setContentsMargins(0, 0, 0, 0)
-        text_col.setSpacing(1)
-        title_label = QLabel(title or serial)
-        title_label.setObjectName(theme.OBJ_GAME_ROW_TITLE)
-        region = region_for_serial(serial)
-        serial_text = serial + (f"   ·   {region}" if region else "")
-        serial_label = QLabel(serial_text)
-        serial_label.setObjectName(theme.OBJ_MUTED_LABEL)
-        text_col.addWidget(title_label)
-        text_col.addWidget(serial_label)
-
-        status_row = QHBoxLayout()
-        status_row.setContentsMargins(0, 0, 0, 0)
-        status_row.setSpacing(theme.SPACING_SM)
-        status_row.addWidget(self._status_chip("Cheats", cheats_installed))
-        status_row.addWidget(self._status_chip("Textures", textures_installed))
-        status_row.addStretch(1)
-        text_col.addLayout(status_row)
-
-        lay.addLayout(text_col, 1)
-
-    @staticmethod
-    def _status_chip(name: str, installed: bool) -> QLabel:
-        chip = QLabel(("✓ " if installed else "· ") + name)
-        chip.setObjectName(theme.OBJ_STATUS_SUCCESS if installed else theme.OBJ_MUTED_LABEL)
-        f = chip.font()
-        f.setPointSize(max(7, f.pointSize() - 2))
-        chip.setFont(f)
-        return chip
-
-    def set_cover(self, cover_path: Optional[str]):
-        w, h = self.THUMB_SIZE
-        if cover_path and os.path.isfile(cover_path):
-            pm = QPixmap(cover_path)
-            if pm and not pm.isNull():
-                self.icon_label.setPixmap(scale_and_crop_pixmap(pm, w, h))
-                return
-        # Center a small disc glyph in the same footprint so rows stay aligned
-        # whether or not a cover has been fetched yet.
-        blank = QPixmap(w, h)
-        blank.fill(Qt.transparent)
-        p = QPainter(blank)
-        icon_pm = icons.tab_icon("disc").pixmap(20, 20)
-        p.drawPixmap((w - 20) // 2, (h - 20) // 2, icon_pm)
-        p.end()
-        self.icon_label.setPixmap(blank)
-
-
 class AIUpscaleWorker(QThread):
     """Runs the (potentially multi-minute) Real-ESRGAN download + batch-upscale
     off the GUI thread. LibraryView drives it with a QEventLoop so the calling
@@ -6175,9 +6238,14 @@ class SyncDialog(QDialog):
         self.texture_combo = QComboBox()
         self.texture_combo.addItem("Don't install a texture pack", None)
         for t in texture_candidates:
-            label = t.get('name') or t.get('github_repo') or 'Pack'
-            if not t.get('verified', True):
-                label += f"  (unverified search result, {t.get('stars', 0)}★ -- {t.get('github_repo')})"
+            source_ref = t.get('github_repo') or t.get('archive_org_id') or t.get('manual_url') or ''
+            label = t.get('name') or source_ref or 'Pack'
+            if t.get('manual_url'):
+                label += "  (opens in your browser -- install manually)"
+            elif t.get('archive_org_id'):
+                label += f"  (unverified search result -- Internet Archive: {source_ref})"
+            elif not t.get('verified', True):
+                label += f"  (unverified search result, {t.get('stars', 0)}★ -- {source_ref})"
             self.texture_combo.addItem(label, t)
         if texture_candidates:
             self.texture_combo.setCurrentIndex(1)
@@ -6268,30 +6336,17 @@ class LibraryView(QWidget):
         self._shutting_down = False
         self._workers: List[QThread] = []
         self.games: Dict[str, GameEntry] = {}
-        self._cover_generation = 0
-        self.view_mode = 'list'
-        self._grid_cover_size = (theme.GRID_COVER_WIDTH, theme.GRID_COVER_HEIGHT)
-        self._grid_tile_size = (theme.GRID_TILE_WIDTH, theme.GRID_TILE_HEIGHT)
 
         self._build_ui()
-        self.btn_view_list.setChecked(True)
         self._load_library()
-        self._refresh_list()
+        self._refresh_carousel()
         self._prefetch_missing_covers()
 
     # ---- UI ----
     def _build_ui(self):
-        root = QHBoxLayout(self)
+        root = QVBoxLayout(self)
         root.setContentsMargins(theme.SPACING_LG, theme.SPACING_LG, theme.SPACING_LG, theme.SPACING_LG)
-        root.setSpacing(theme.SPACING_LG)
-
-        left_widget = QWidget()
-        left_widget.setObjectName(theme.OBJ_SIDEBAR)
-        left_widget.setMinimumWidth(300)
-        left_widget.setMaximumWidth(380)
-        left = QVBoxLayout(left_widget)
-        left.setContentsMargins(theme.SPACING_MD, theme.SPACING_MD, theme.SPACING_MD, theme.SPACING_MD)
-        left.setSpacing(theme.SPACING_SM)
+        root.setSpacing(theme.SPACING_MD)
 
         toolbar = QHBoxLayout()
         toolbar.setSpacing(theme.SPACING_SM)
@@ -6299,161 +6354,85 @@ class LibraryView(QWidget):
         self.btn_scan.clicked.connect(self._scan_folder)
         effects.add_hover_glow(self.btn_scan)
         self.btn_add = QPushButton("Add Game…")
+        self.btn_add.clicked.connect(self._add_game_manually)
         effects.add_hover_glow(self.btn_add)
         toolbar.addWidget(self.btn_scan)
         toolbar.addWidget(self.btn_add)
-        self.btn_add.clicked.connect(self._add_game_manually)
-        toolbar.addStretch(1)
-        self.btn_view_list = QToolButton()
-        self.btn_view_list.setIcon(icons.tab_icon("view_list"))
-        self.btn_view_list.setToolTip("List view")
-        self.btn_view_list.setObjectName(theme.OBJ_VIEW_TOGGLE_BUTTON)
-        self.btn_view_list.setCheckable(True)
-        self.btn_view_list.setFixedSize(30, 30)
-        self.btn_view_grid = QToolButton()
-        self.btn_view_grid.setIcon(icons.tab_icon("view_grid"))
-        self.btn_view_grid.setToolTip("Grid view")
-        self.btn_view_grid.setObjectName(theme.OBJ_VIEW_TOGGLE_BUTTON)
-        self.btn_view_grid.setCheckable(True)
-        self.btn_view_grid.setFixedSize(30, 30)
-        self.btn_view_list.clicked.connect(lambda: self._set_view_mode('list'))
-        self.btn_view_grid.clicked.connect(lambda: self._set_view_mode('grid'))
-        effects.add_hover_glow(self.btn_view_list, max_blur=16)
-        effects.add_hover_glow(self.btn_view_grid, max_blur=16)
-
-        self.grid_zoom_slider = QSlider(Qt.Horizontal)
-        self.grid_zoom_slider.setRange(80, 220)
-        self.grid_zoom_slider.setValue(theme.GRID_COVER_WIDTH)
-        self.grid_zoom_slider.setFixedWidth(90)
-        self.grid_zoom_slider.setToolTip("Cover size")
-        self.grid_zoom_slider.setVisible(False)
-        self.grid_zoom_slider.valueChanged.connect(self._on_grid_zoom_changed)
-        toolbar.addWidget(self.grid_zoom_slider)
-        toolbar.addWidget(self.btn_view_list)
-        toolbar.addWidget(self.btn_view_grid)
-        left.addLayout(toolbar)
 
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Search your library…")
-        self.search_box.textChanged.connect(self._refresh_list)
-        left.addWidget(self.search_box)
+        self.search_box.setMaximumWidth(220)
+        self.search_box.textChanged.connect(lambda _t: self._refresh_carousel())
+        toolbar.addWidget(self.search_box)
 
-        sort_row = QHBoxLayout()
-        sort_row.setSpacing(theme.SPACING_SM)
         sort_label = QLabel("Sort:")
         sort_label.setObjectName(theme.OBJ_MUTED_LABEL)
-        sort_row.addWidget(sort_label)
+        toolbar.addWidget(sort_label)
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(["Name (A-Z)", "Name (Z-A)", "Region"])
-        self.sort_combo.currentIndexChanged.connect(lambda _i: self._refresh_list(self.search_box.text()))
-        sort_row.addWidget(self.sort_combo, 1)
-        left.addLayout(sort_row)
+        self.sort_combo.currentIndexChanged.connect(lambda _i: self._refresh_carousel())
+        toolbar.addWidget(self.sort_combo)
 
+        toolbar.addStretch(1)
         self.library_count_label = QLabel("")
         self.library_count_label.setObjectName(theme.OBJ_MUTED_LABEL)
-        left.addWidget(self.library_count_label)
+        toolbar.addWidget(self.library_count_label)
+        root.addLayout(toolbar)
 
         self.scan_progress = QProgressBar()
         self.scan_progress.setVisible(False)
-        left.addWidget(self.scan_progress)
+        root.addWidget(self.scan_progress)
 
-        self.list_widget = QListWidget()
-        self.list_widget.setSpacing(2)
-        # Per-item scrolling quantizes the scrollbar to the item count, which
-        # makes both wheel scrolling and dragging the scrollbar handle feel
-        # jumpy/steppy. Per-pixel scrolling makes both smooth and lets the
-        # scrollbar behave like a continuous slider instead of snapping between
-        # row positions.
-        self.list_widget.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.list_widget.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.list_widget.verticalScrollBar().setSingleStep(24)
-        self.list_widget.itemSelectionChanged.connect(self._on_selection_changed)
-        self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.list_widget.customContextMenuRequested.connect(self._list_context_menu)
-        self.list_widget.itemDoubleClicked.connect(lambda _item: self._sync_selected())
-        left.addWidget(self.list_widget, 1)
+        # The PS2-style 3D "Browser screen" -- a real Three.js/WebGL scene
+        # (see ps2_ui.py/web/carousel.html), not a QListWidget. All the actual
+        # install/scan/cover-cache logic below is unchanged from before; only
+        # this presentation layer is new.
+        self.carousel = ps2_ui.GameCarouselWidget()
+        self.carousel.setContextMenuPolicy(Qt.NoContextMenu)  # no browser-style right-click menu
+        self.carousel.selectionChanged.connect(self._on_carousel_selection_changed)
+        self.carousel.activated.connect(lambda _serial: self._sync_selected())
+        self.carousel.removeRequested.connect(self._on_remove_requested)
+        self.carousel.backRequested.connect(self.parent.show_ring_menu)
+        root.addWidget(self.carousel, 1)
 
-        self.left_widget = left_widget
-        self._root_layout = root
-        root.addWidget(left_widget)
-
-        right_widget = QWidget()
-        self.right_widget = right_widget
-        right = QVBoxLayout(right_widget)
-        right.setContentsMargins(0, 0, 0, 0)
-        right.setSpacing(theme.SPACING_MD)
-
-        hero = QHBoxLayout()
-        hero.setSpacing(theme.SPACING_LG)
-
-        cover_stack_widget = QWidget()
-        cover_stack_widget.setFixedSize(theme.COVER_WIDTH, theme.COVER_HEIGHT)
-        cover_stack = QStackedLayout(cover_stack_widget)
-        cover_stack.setStackingMode(QStackedLayout.StackAll)
-        cover_stack.setContentsMargins(0, 0, 0, 0)
-
-        self.cover_label = QLabel()
-        self.cover_label.setObjectName(theme.OBJ_COVER_FRAME)
-        self.cover_label.setFixedSize(theme.COVER_WIDTH, theme.COVER_HEIGHT)
-        self.cover_label.setAlignment(Qt.AlignCenter)
-        self.cover_label.setScaledContents(False)
-        cover_stack.addWidget(self.cover_label)
-
-        self.cover_loading_label = QLabel("Loading cover…")
-        self.cover_loading_label.setObjectName(theme.OBJ_OVERLAY_LABEL)
-        self.cover_loading_label.setFixedSize(theme.COVER_WIDTH, theme.COVER_HEIGHT)
-        self.cover_loading_label.setAlignment(Qt.AlignCenter)
-        self.cover_loading_label.setVisible(False)
-        cover_stack.addWidget(self.cover_loading_label)
-
-        hero.addWidget(cover_stack_widget, 0, Qt.AlignTop)
-
-        hero_text = QVBoxLayout()
-        hero_text.setSpacing(theme.SPACING_XS)
-        hero_text.addStretch(1)
-
-        self.detail_title = QLabel("Select a game from your library")
-        self.detail_title.setObjectName(theme.OBJ_HERO_TITLE)
-        self.detail_title.setWordWrap(True)
-        f = self.detail_title.font()
-        f.setPointSize(f.pointSize() + 8)
-        self.detail_title.setFont(f)
-        hero_text.addWidget(self.detail_title)
-
-        self.detail_subtitle = QLabel("Scan a folder or add a game to get started.")
-        self.detail_subtitle.setObjectName(theme.OBJ_MUTED_LABEL)
-        hero_text.addWidget(self.detail_subtitle)
-
-        hero_text.addSpacing(theme.SPACING_MD)
-
-        status_grp = QGroupBox("Status")
-        status_form = QFormLayout(status_grp)
+        status_row = QHBoxLayout()
+        status_row.setSpacing(theme.SPACING_LG)
+        status_row.addStretch(1)
+        cheats_row = QHBoxLayout()
+        cheats_label = QLabel("Cheats:")
+        cheats_label.setObjectName(theme.OBJ_MUTED_LABEL)
+        cheats_row.addWidget(cheats_label)
         self.cheats_status_label = QLabel("—")
+        cheats_row.addWidget(self.cheats_status_label)
+        status_row.addLayout(cheats_row)
+        textures_row = QHBoxLayout()
+        textures_label = QLabel("Textures:")
+        textures_label.setObjectName(theme.OBJ_MUTED_LABEL)
+        textures_row.addWidget(textures_label)
         self.textures_status_label = QLabel("—")
-        status_form.addRow("Cheats:", self.cheats_status_label)
-        status_form.addRow("Textures:", self.textures_status_label)
-        hero_text.addWidget(status_grp)
+        textures_row.addWidget(self.textures_status_label)
+        status_row.addLayout(textures_row)
+        status_row.addStretch(1)
+        root.addLayout(status_row)
 
         self.btn_sync = QPushButton("Install")
         self.btn_sync.setObjectName(theme.OBJ_SUCCESS_BUTTON)
         self.btn_sync.setMinimumHeight(42)
+        self.btn_sync.setMaximumWidth(260)
         self.btn_sync.setEnabled(False)
         self.btn_sync.clicked.connect(self._sync_selected)
         effects.add_hover_glow(self.btn_sync, color=theme.COLOR_SUCCESS_HOVER, max_blur=28)
-        hero_text.addWidget(self.btn_sync)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        btn_row.addWidget(self.btn_sync)
+        btn_row.addStretch(1)
+        root.addLayout(btn_row)
 
         self.result_label = QLabel("")
         self.result_label.setWordWrap(True)
         self.result_label.setObjectName(theme.OBJ_MUTED_LABEL)
-        hero_text.addWidget(self.result_label)
-
-        hero_text.addStretch(2)
-        hero.addLayout(hero_text, 1)
-        right.addLayout(hero)
-        right.addStretch(1)
-        root.addWidget(right_widget, 1)
-
-        self._set_cover_pixmap(create_library_cover_placeholder(""))
+        self.result_label.setAlignment(Qt.AlignCenter)
+        root.addWidget(self.result_label)
 
     # ---- persistence ----
     def _load_library(self):
@@ -6476,51 +6455,11 @@ class LibraryView(QWidget):
         except Exception as e:
             logger.warning(f"[LibraryView] Failed to save library: {e}")
 
-    # ---- list ----
-    def _set_view_mode(self, mode: str):
-        """Switch between the compact list (icon + two lines of text) and a
-        PCSX2-style cover-art grid. Grid mode widens the library pane at the
-        expense of the detail panel since it needs the room; list mode
-        restores the normal narrow-sidebar layout."""
-        self.view_mode = mode
-        self.btn_view_list.setChecked(mode == 'list')
-        self.btn_view_grid.setChecked(mode == 'grid')
-        self.grid_zoom_slider.setVisible(mode == 'grid')
-        cur_min, cur_max = self.left_widget.minimumWidth(), self.left_widget.maximumWidth()
-        if mode == 'grid':
-            effects.animate_width(self.left_widget, cur_min, cur_max, 600, 16777215)
-            self._root_layout.setStretchFactor(self.left_widget, 3)
-            self._root_layout.setStretchFactor(self.right_widget, 1)
-            self.list_widget.setViewMode(QListWidget.IconMode)
-            self.list_widget.setMovement(QListWidget.Static)
-            self.list_widget.setResizeMode(QListWidget.Adjust)
-            self.list_widget.setWordWrap(True)
-            self.list_widget.setSpacing(theme.SPACING_SM)
-            self.list_widget.setIconSize(QSize(*self._grid_cover_size))
-            self.list_widget.setGridSize(QSize(*self._grid_tile_size))
-        else:
-            effects.animate_width(self.left_widget, cur_min, cur_max, 300, 380)
-            self._root_layout.setStretchFactor(self.left_widget, 0)
-            self._root_layout.setStretchFactor(self.right_widget, 1)
-            self.list_widget.setViewMode(QListWidget.ListMode)
-            self.list_widget.setMovement(QListWidget.Static)
-            self.list_widget.setSpacing(2)
-            self.list_widget.setGridSize(QSize())
-        self._refresh_list(self.search_box.text())
-
-    def _on_grid_zoom_changed(self, value: int):
-        cover_w = value
-        cover_h = int(value * (theme.GRID_COVER_HEIGHT / theme.GRID_COVER_WIDTH))
-        self._grid_cover_size = (cover_w, cover_h)
-        self._grid_tile_size = (cover_w + 20, cover_h + 60)
-        if self.view_mode == 'grid':
-            self.list_widget.setIconSize(QSize(cover_w, cover_h))
-            self.list_widget.setGridSize(QSize(cover_w + 20, cover_h + 60))
-            self._refresh_list(self.search_box.text())
-
-    def _refresh_list(self, filter_text: str = ""):
-        self.list_widget.clear()
-        ft = (filter_text or "").strip().upper()
+    # ---- carousel ----
+    def _refresh_carousel(self):
+        """Rebuild the carousel's item list from self.games (unchanged data
+        model) -- the PS2-carousel equivalent of the old _refresh_list()."""
+        ft = (self.search_box.text() or "").strip().upper()
         self.library_count_label.setText(f"{len(self.games)} game(s) in your library" if self.games else "")
         sort_index = self.sort_combo.currentIndex() if hasattr(self, 'sort_combo') else 0
         if sort_index == 1:
@@ -6532,95 +6471,69 @@ class LibraryView(QWidget):
         else:
             key_fn = lambda s: (self.games[s].title or s).upper()
             reverse = False
+
+        previously_selected = self.carousel.current_serial()
+
+        items = []
         for serial in sorted(self.games.keys(), key=key_fn, reverse=reverse):
             g = self.games[serial]
             if ft and ft not in (g.title or "").upper() and ft not in g.serial.upper():
                 continue
-            item = QListWidgetItem()
-            item.setData(Qt.UserRole, g.serial)
             cover_path = cover_cache_path(g.serial, self.COVER_CACHE_DIR)
-            has_cover = os.path.isfile(cover_path)
+            if not os.path.isfile(cover_path):
+                cover_path = self._placeholder_cover_path(g.serial)
             cheats_installed, textures_installed = self._game_install_status(g)
-            if self.view_mode == 'grid':
-                cw, ch = self._grid_cover_size
-                if has_cover:
-                    pm = QPixmap(cover_path)
-                    icon_pm = scale_and_crop_pixmap(pm, cw, ch) if pm and not pm.isNull() else None
-                else:
-                    icon_pm = scale_and_crop_pixmap(create_library_cover_placeholder(g.serial), cw, ch)
-                if icon_pm:
-                    if cheats_installed or textures_installed:
-                        icon_pm = self._badge_cover(icon_pm, cheats_installed, textures_installed)
-                    item.setIcon(QIcon(icon_pm))
-                item.setText(g.title or g.serial)
-                item.setTextAlignment(Qt.AlignHCenter)
-                region = region_for_serial(g.serial)
-                tip = f"{g.title}\n{g.serial}" + (f" · {region}" if region else "")
-                item.setToolTip(tip)
-                self.list_widget.addItem(item)
-            else:
-                row = GameListItemWidget(g.title, g.serial, cover_path if has_cover else None,
-                                          cheats_installed, textures_installed)
-                item.setSizeHint(row.sizeHint())
-                self.list_widget.addItem(item)
-                self.list_widget.setItemWidget(item, row)
+            items.append(ps2_ui.CarouselItem(
+                serial=g.serial,
+                title=g.title or g.serial,
+                region=region_for_serial(g.serial),
+                cover_path=cover_path,
+                cheats_installed=cheats_installed,
+                textures_installed=textures_installed,
+            ))
+        self.carousel.set_items(items)
+        if previously_selected:
+            self.carousel.select_serial(previously_selected)
 
-    @staticmethod
-    def _badge_cover(pm: QPixmap, cheats_installed: bool, textures_installed: bool) -> QPixmap:
-        """Draw a small install-status badge in the corner of a grid cover tile:
-        green check if both cheats and textures are installed, amber dot if only
-        one is."""
-        out = QPixmap(pm)
-        d = 18
-        x = out.width() - d - 4
-        y = out.height() - d - 4
-        color = QColor(theme.COLOR_SUCCESS) if (cheats_installed and textures_installed) else QColor(theme.COLOR_WARNING)
-        p = QPainter(out)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setBrush(color)
-        p.setPen(QColor(theme.COLOR_BG_TOP))
-        p.drawEllipse(x, y, d, d)
-        if cheats_installed and textures_installed:
-            p.setPen(QPen(QColor("white"), 2))
-            p.drawLine(x + 4, y + 9, x + 7, y + 13)
-            p.drawLine(x + 7, y + 13, x + 14, y + 5)
-        p.end()
-        return out
+    def _placeholder_cover_path(self, serial: str) -> str:
+        """A cached placeholder PNG for games with no fetched cover yet -- the
+        carousel textures 3D planes from files on disk, so unlike the old
+        list/grid (which could just draw a placeholder QPixmap on the fly)
+        it needs *something* on disk to point at."""
+        placeholder_dir = os.path.join(self.COVER_CACHE_DIR, "placeholders")
+        try:
+            os.makedirs(placeholder_dir, exist_ok=True)
+        except Exception:
+            pass
+        path = os.path.join(placeholder_dir, f"{norm_serial_key(serial)}.png")
+        if not os.path.isfile(path):
+            try:
+                create_library_cover_placeholder(serial).save(path)
+            except Exception:
+                return ""
+        return path
 
     def _selected_game(self) -> Optional[GameEntry]:
-        items = self.list_widget.selectedItems()
-        if not items:
-            return None
-        return self.games.get(items[0].data(Qt.UserRole))
+        serial = self.carousel.current_serial()
+        return self.games.get(serial) if serial else None
 
-    def _list_context_menu(self, pos):
-        item = self.list_widget.itemAt(pos)
-        if not item:
-            return
-        game = self.games.get(item.data(Qt.UserRole))
-        if not game:
-            return
-        self.list_widget.setCurrentItem(item)
-        menu = QMenu(self)
-        cheats_installed, textures_installed = self._game_install_status(game)
-        sync_act = menu.addAction("Re-install" if (cheats_installed or textures_installed) else "Install")
-        menu.addSeparator()
-        remove_act = menu.addAction("Remove from Library")
-        chosen = menu.exec_(self.list_widget.mapToGlobal(pos))
-        if chosen == sync_act:
-            self._sync_selected()
-        elif chosen == remove_act:
-            reply = QMessageBox.question(
-                self, "Remove Game",
-                f"Remove \"{game.title or game.serial}\" from your library?\n\n"
-                f"This only removes it from this app's list -- any cheats/textures "
-                f"already installed in PCSX2 are left untouched.",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-            )
-            if reply == QMessageBox.Yes:
-                del self.games[game.serial]
-                self._save_library()
-                self._refresh_list(self.search_box.text())
+    def _remove_game(self, game: GameEntry):
+        reply = QMessageBox.question(
+            self, "Remove Game",
+            f"Remove \"{game.title or game.serial}\" from your library?\n\n"
+            f"This only removes it from this app's list -- any cheats/textures "
+            f"already installed in PCSX2 are left untouched.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            del self.games[game.serial]
+            self._save_library()
+            self._refresh_carousel()
+
+    def _on_remove_requested(self, serial: str):
+        game = self.games.get(serial)
+        if game:
+            self._remove_game(game)
 
     def _set_status(self, label: QLabel, text: str, kind: str = "muted"):
         obj_names = {
@@ -6633,81 +6546,51 @@ class LibraryView(QWidget):
         label.style().unpolish(label)
         label.style().polish(label)
 
-    def _on_selection_changed(self):
-        game = self._selected_game()
+    def _on_carousel_selection_changed(self, serial: str):
+        game = self.games.get(serial)
         if not game:
             self.btn_sync.setEnabled(False)
-            self.detail_title.setText("Select a game from your library")
-            self.detail_subtitle.setText("Scan a folder or add a game to get started.")
             self._set_status(self.cheats_status_label, "—")
             self._set_status(self.textures_status_label, "—")
             self.result_label.setText("")
-            self._set_cover_pixmap(create_library_cover_placeholder(""))
             self.parent.state.current_game = None
             self.parent.current_game_changed.emit(None)
             return
-        self.detail_title.setText(game.title or game.serial)
-        subtitle = game.serial + (f"   ·   CRC {game.crc}" if game.crc else "")
-        self.detail_subtitle.setText(subtitle)
         self._refresh_installed_status(game)
         self.result_label.setText("")
         self.btn_sync.setEnabled(True)
 
-        self._load_cover(game)
+        self._load_cover_if_missing(game)
 
         self.parent.state.current_game = game
         self.parent.current_game_changed.emit(game)
 
     # ---- cover art ----
-    def _set_cover_pixmap(self, pm: QPixmap):
-        if not pm or pm.isNull():
-            self.cover_label.clear()
+    def _load_cover_if_missing(self, game: GameEntry):
+        """The bulk CoverPrefetchWorker (see _prefetch_missing_covers) already
+        covers most games; this is the fallback for one that slipped through
+        (e.g. added manually after the last prefetch pass). Updates the
+        carousel's texture in place once fetched -- there's no separate
+        "hero" cover widget anymore, the carousel tile *is* the display."""
+        cache_path = cover_cache_path(game.serial, self.COVER_CACHE_DIR)
+        if os.path.isfile(cache_path):
             return
-        self.cover_label.setPixmap(scale_and_crop_pixmap(pm, theme.COVER_WIDTH, theme.COVER_HEIGHT))
 
-    def _load_cover(self, game: GameEntry):
-        self._cover_generation += 1
-        gen = self._cover_generation
-        serial_key = norm_serial_key(game.serial)
+        candidates = build_cover_candidates(game.serial)
+        if not candidates:
+            return
 
         try:
             os.makedirs(self.COVER_CACHE_DIR, exist_ok=True)
         except Exception:
             pass
-        cache_path = os.path.join(self.COVER_CACHE_DIR, f"cover_{serial_key}.jpg")
-
-        self.cover_loading_label.setVisible(False)
-
-        if os.path.isfile(cache_path):
-            pm = QPixmap(cache_path)
-            if pm and not pm.isNull():
-                self._set_cover_pixmap(pm)
-                return
-
-        self._set_cover_pixmap(create_library_cover_placeholder(game.serial))
-        candidates = build_cover_candidates(game.serial)
-        if not candidates:
-            return
-
-        self.cover_loading_label.setVisible(True)
-        self.cover_loading_label.raise_()  # QStackedLayout doesn't guarantee this stays on top
         worker = CoverFetchWorker(candidates, cache_path, parent=self)
 
         def _on_fetched(path):
-            if gen != self._cover_generation:
-                return  # selection moved on since this fetch started
-            self.cover_loading_label.setVisible(False)
-            pm = QPixmap(path)
-            if pm and not pm.isNull():
-                self._set_cover_pixmap(pm)
-            else:
-                self._set_cover_pixmap(create_library_cover_placeholder(game.serial, found=False))
+            self.carousel.update_cover(game.serial, path)
 
         def _on_failed():
-            if gen != self._cover_generation:
-                return
-            self.cover_loading_label.setVisible(False)
-            self._set_cover_pixmap(create_library_cover_placeholder(game.serial, found=False))
+            pass  # keep showing the placeholder texture already in place
 
         worker.fetched.connect(_on_fetched)
         worker.fetch_failed.connect(_on_failed)
@@ -6739,7 +6622,7 @@ class LibraryView(QWidget):
                 self.games[g.serial] = g
                 added += 1
         self._save_library()
-        self._refresh_list(self.search_box.text())
+        self._refresh_carousel()
 
         if total_files == 0:
             msg = "No disc images (.iso/.bin/.chd/.cso) were found in that folder."
@@ -6769,23 +6652,7 @@ class LibraryView(QWidget):
 
     def _on_cover_prefetched(self, serial: str):
         cache_path = cover_cache_path(serial, self.COVER_CACHE_DIR)
-        for i in range(self.list_widget.count()):
-            item = self.list_widget.item(i)
-            if item.data(Qt.UserRole) == serial:
-                if self.view_mode == 'grid':
-                    pm = QPixmap(cache_path)
-                    if pm and not pm.isNull():
-                        item.setIcon(QIcon(scale_and_crop_pixmap(pm, *self._grid_cover_size)))
-                else:
-                    row = self.list_widget.itemWidget(item)
-                    if isinstance(row, GameListItemWidget):
-                        row.set_cover(cache_path)
-                break
-        game = self._selected_game()
-        if game and game.serial == serial:
-            pm = QPixmap(cache_path)
-            if pm and not pm.isNull():
-                self._set_cover_pixmap(pm)
+        self.carousel.update_cover(serial, cache_path)
 
     # ---- manual add ----
     def _add_game_manually(self):
@@ -6814,7 +6681,7 @@ class LibraryView(QWidget):
         title = title_edit.text().strip() or bundled_lookup_title(serial) or serial
         self.games[serial] = GameEntry(serial=serial, title=title, crc=None, source_path=None)
         self._save_library()
-        self._refresh_list(self.search_box.text())
+        self._refresh_carousel()
 
     # ---- sync ----
     def _gather_cheat_candidates(self, game: GameEntry, cheats_dir: str):
@@ -6888,9 +6755,13 @@ class LibraryView(QWidget):
 
     def _gather_texture_candidates(self, game: GameEntry, textures_dir: str):
         """Look up what texture packs are available: the curated manifest first,
-        then an unverified GitHub repo search if nothing curated exists. Always
-        searches (even if a pack is already installed) so the "reinstall anyway"
-        option in the dialog has candidates to choose from. Returns
+        then unverified search across every source this app can actually reach
+        automatically (GitHub repos, Internet Archive items) if nothing curated
+        exists. GBAtemp/forums.pcsx2.net (Cloudflare bot challenge) and mega.nz
+        (its own robots.txt disallows bot access to /file and /folder) aren't
+        searched automatically -- see the comment above search_archive_org_texture_packs().
+        Always searches (even if a pack is already installed) so the "reinstall
+        anyway" option in the dialog has candidates to choose from. Returns
         (candidates, log_lines, already_installed)."""
         existing_dir = texture_upscale.replacement_textures_dir(textures_dir, game.serial) if textures_dir else ''
         already_installed = bool(existing_dir and os.path.isdir(existing_dir) and os.listdir(existing_dir))
@@ -6907,14 +6778,25 @@ class LibraryView(QWidget):
         search_results = []
         if requests is None:
             log.append("GitHub search: skipped (requests not installed).")
+            log.append("Internet Archive search: skipped (requests not installed).")
         else:
-            search_results, err = search_github_texture_packs(game.serial, game.title)
+            gh_results, err = search_github_texture_packs(game.serial, game.title)
             if err:
                 log.append(f"GitHub search: {err}")
-            elif search_results:
-                log.append(f"GitHub search: {len(search_results)} unverified candidate(s) found -- review before installing.")
+            elif gh_results:
+                log.append(f"GitHub search: {len(gh_results)} unverified candidate(s) found -- review before installing.")
             else:
                 log.append("GitHub search: nothing found.")
+            search_results.extend(gh_results)
+
+            ia_results, ia_err = search_archive_org_texture_packs(game.serial, game.title)
+            if ia_err:
+                log.append(f"Internet Archive search: {ia_err}")
+            elif ia_results:
+                log.append(f"Internet Archive search: {len(ia_results)} unverified candidate(s) found -- review before installing.")
+            else:
+                log.append("Internet Archive search: nothing found.")
+            search_results.extend(ia_results)
 
         if not search_results and textures_dir and texture_upscale.has_dumped_textures(textures_dir, game.serial):
             log.append("No pack found anywhere, but PCSX2 has dumped textures for this game -- "
@@ -6991,19 +6873,29 @@ class LibraryView(QWidget):
     def _install_texture_entry(self, game: GameEntry, textures_dir: str, entry: dict) -> str:
         if entry.get('ai_upscale'):
             return self._install_ai_upscale(game, textures_dir)
+        if entry.get('manual_url'):
+            # A source this app won't fetch automatically (e.g. a mega.nz link
+            # found by hand) -- open it for the user instead of pretending it's
+            # a normal download.
+            QDesktopServices.openUrl(QUrl(entry['manual_url']))
+            self._set_status(self.textures_status_label, "Opened link -- install manually", "warning")
+            dest = os.path.join(textures_dir, game.serial, texture_upscale.TEXTURE_REPLACEMENT_SUBDIR)
+            return (f"Textures: '{entry.get('name', 'this pack')}' opened in your browser -- "
+                    f"this app can't auto-download from that host, so extract it into {dest} yourself.")
         try:
-            resolved = resolve_texture_release_asset(entry)
+            resolved = resolve_texture_source(entry)
             if not resolved or not resolved[2]:
                 self._set_status(self.textures_status_label, "Install failed", "error")
                 return "Textures: couldn't resolve a download for the selected pack."
-            display_name, repo, download_url = resolved
+            display_name, source_label, download_url = resolved
 
+            ext = '.7z' if download_url.split('?')[0].lower().endswith('.7z') else '.zip'
             tmp_dir = os.path.join(os.path.expanduser('~'), '.pcsx2_manager_tmp')
             os.makedirs(tmp_dir, exist_ok=True)
-            local_zip = os.path.join(tmp_dir, f"{game.serial}_texture_pack.zip")
+            local_archive = os.path.join(tmp_dir, f"{game.serial}_texture_pack{ext}")
             resp = requests.get(download_url, timeout=60, stream=True)
             resp.raise_for_status()
-            with open(local_zip, 'wb') as f:
+            with open(local_archive, 'wb') as f:
                 for chunk in resp.iter_content(chunk_size=1024 * 256):
                     if chunk:
                         f.write(chunk)
@@ -7015,10 +6907,10 @@ class LibraryView(QWidget):
             game_dir = os.path.join(textures_dir, game.serial)
             from textures_install import perform_pack_installs
             installed, failures = perform_pack_installs(
-                [(display_name, local_zip)], game_dir,
+                [(display_name, local_archive)], game_dir,
                 target_hint=texture_upscale.TEXTURE_REPLACEMENT_SUBDIR)
             try:
-                os.remove(local_zip)
+                os.remove(local_archive)
             except Exception:
                 pass
 
@@ -7026,7 +6918,7 @@ class LibraryView(QWidget):
                 self._set_status(self.textures_status_label, f"Installed ({display_name})", "success")
                 if not entry.get('verified', True):
                     self._offer_save_texture_source(game.serial, entry, download_url)
-                return f"Textures: installed '{display_name}' from {repo}."
+                return f"Textures: installed '{display_name}' from {source_label}."
             msg = failures[0][2] if failures else "install failed"
             self._set_status(self.textures_status_label, "Install failed", "error")
             return f"Textures: found a pack but install failed -- {msg}"
@@ -7074,22 +6966,28 @@ class LibraryView(QWidget):
         return f"Textures: {result.get('msg', 'AI upscale failed.')}"
 
     def _offer_save_texture_source(self, serial: str, entry: dict, download_url: str):
-        """After a successful install from an unverified GitHub search result,
-        offer to promote it into the persistent curated manifest -- closes the
-        loop on "control over sources": your own confirmed finds stick around
-        instead of needing to be rediscovered by search every time."""
-        asset_name = os.path.basename(download_url.split('?')[0])
+        """After a successful install from an unverified search result (GitHub
+        or Internet Archive), offer to promote it into the persistent curated
+        manifest -- closes the loop on "control over sources": your own
+        confirmed finds stick around instead of needing to be rediscovered by
+        search every time."""
+        from urllib.parse import unquote
+        asset_name = unquote(os.path.basename(download_url.split('?')[0]))
+        source_label = entry.get('github_repo') or entry.get('archive_org_id') or 'this source'
         reply = QMessageBox.question(
             self, "Remember This Source?",
-            f"\"{entry.get('github_repo')}\" worked for this game.\n\n"
+            f"\"{source_label}\" worked for this game.\n\n"
             f"Add it to texture_sources.json so future syncs find it directly "
-            f"instead of searching GitHub again?",
+            f"instead of searching again?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
         )
         if reply != QMessageBox.Yes:
             return
-        clean_entry = {'name': entry.get('name') or entry.get('github_repo'),
-                        'github_repo': entry.get('github_repo'), 'asset_pattern': asset_name}
+        clean_entry = {'name': entry.get('name') or source_label, 'asset_pattern': asset_name}
+        if entry.get('archive_org_id'):
+            clean_entry['archive_org_id'] = entry['archive_org_id']
+        else:
+            clean_entry['github_repo'] = entry.get('github_repo')
         if not save_texture_source(serial, clean_entry):
             QMessageBox.warning(self, "Couldn't Save", "Failed to update texture_sources.json.")
 
@@ -7191,7 +7089,18 @@ class MainWindow(QMainWindow):
         self.settings_tab = SettingsTab(self)
 
         self.library_view = LibraryView(self)
-        outer.addWidget(self.library_view, 1)
+
+        self.boot_screen = ps2_ui.BootScreenWidget()
+        self.boot_screen.finished.connect(self._on_boot_finished)
+
+        self.ring_menu = ps2_ui.RingMenuWidget([("library", "Library"), ("settings", "Settings")])
+        self.ring_menu.optionChosen.connect(self._on_ring_option_chosen)
+
+        self.main_stack = QStackedWidget()
+        self.main_stack.addWidget(self.boot_screen)
+        self.main_stack.addWidget(self.ring_menu)
+        self.main_stack.addWidget(self.library_view)
+        outer.addWidget(self.main_stack, 1)
 
         self.setCentralWidget(frame)
 
@@ -7286,6 +7195,27 @@ class MainWindow(QMainWindow):
 
     def open_settings_dialog(self):
         self._open_widget_dialog(self.settings_tab, "Settings", size=(640, 700))
+
+    def _on_boot_finished(self):
+        self.show_ring_menu()
+
+    def _on_ring_option_chosen(self, key: str):
+        if key == "library":
+            self.main_stack.setCurrentWidget(self.library_view)
+        elif key == "settings":
+            self.open_settings_dialog()
+
+    def show_ring_menu(self):
+        self.main_stack.setCurrentWidget(self.ring_menu)
+        self.ring_menu.setFocus()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Re-request focus for whichever stack page is current every time the
+        # window is (re)shown -- e.g. after being minimized and restored.
+        current = self.main_stack.currentWidget()
+        if current is not None:
+            current.setFocus()
 
     def dragEnterEvent(self, e: QDragEnterEvent):
         if e.mimeData().hasUrls():

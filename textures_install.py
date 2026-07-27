@@ -4,6 +4,11 @@ import zipfile
 from typing import List, Tuple, Callable, Optional
 import re
 
+try:
+    import py7zr
+except ImportError:
+    py7zr = None
+
 # Pure helper functions for installing texture packs without GUI dependencies.
 # These are intentionally free of PySide6 imports so tests can import them headlessly.
 
@@ -111,8 +116,12 @@ def perform_pack_installs(
             if not os.path.exists(src):
                 return 0, (display, src, 'Source path not found')
 
-            # unzip if needed
-            if os.path.isfile(src) and src.lower().endswith('.zip'):
+            # unzip/un-7z if needed -- Internet Archive texture packs are
+            # frequently shipped as .7z rather than .zip.
+            lower = src.lower()
+            if os.path.isfile(src) and (lower.endswith('.zip') or lower.endswith('.7z')):
+                if lower.endswith('.7z') and py7zr is None:
+                    return 0, (display, src, "7z archive support requires the 'py7zr' package (pip install py7zr)")
                 temp_dir = os.path.join(os.path.expanduser('~'), '.pcsx2_manager_tmp', f"unzip_{idx}")
                 if os.path.exists(temp_dir):
                     try:
@@ -120,8 +129,12 @@ def perform_pack_installs(
                     except Exception:
                         pass
                 os.makedirs(temp_dir, exist_ok=True)
-                with zipfile.ZipFile(src, 'r') as z:
-                    z.extractall(temp_dir)
+                if lower.endswith('.zip'):
+                    with zipfile.ZipFile(src, 'r') as z:
+                        z.extractall(temp_dir)
+                else:
+                    with py7zr.SevenZipFile(src, 'r') as z:
+                        z.extractall(temp_dir)
                 src_folder = temp_dir
             else:
                 src_folder = src
