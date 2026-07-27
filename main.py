@@ -7244,6 +7244,14 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         # Re-request focus for whichever stack page is current every time the
         # window is (re)shown -- e.g. after being minimized and restored.
+        # Skip this while a modal dialog (Install, Add Game, Settings, ...) is
+        # open: Windows can send the owner window a show/activate notification
+        # while an owned dialog appears, which re-enters this handler and yanks
+        # keyboard focus back to the background WebEngineView screen -- making
+        # the dialog's own widgets look unclickable even though it's genuinely
+        # on top and visible.
+        if QApplication.activeModalWidget() is not None:
+            return
         current = self.main_stack.currentWidget()
         if current is not None:
             current.setFocus()
