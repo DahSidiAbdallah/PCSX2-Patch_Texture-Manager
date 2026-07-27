@@ -27,6 +27,15 @@ import sys
 from PySide6.QtGui import QIcon, QPixmap, QDragEnterEvent, QDropEvent, QAction, QPainter, QColor, QPen, QDesktopServices
 import concurrent.futures
 
+# The app's own icon (a cropped, text-free version of logo.png -- square and
+# legible at the small sizes a taskbar/title bar actually render it at,
+# unlike the full logo with its "PCSX2 PATCH & TEXTURE MANAGER" wordmark).
+# .ico (multi-resolution) for setWindowIcon()/the OS taskbar, .png for the
+# small in-title-bar pixmap where a single fixed size is fine.
+_ASSETS_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_ICON_ICO_PATH = os.path.join(_ASSETS_DIR, "app_icon.ico")
+APP_ICON_PATH = os.path.join(_ASSETS_DIR, "app_icon.png")
+
 # ---------------------------- Windows native window-chrome support ----------------------------
 # Qt's Qt.FramelessWindowHint strips the window styles Windows' own Snap feature
 # (drag-to-top-to-maximize, drag-to-edge-to-half-screen) checks for, so a purely
@@ -68,6 +77,24 @@ if IS_WINDOWS:
     HT_BOTTOM = 15
     HT_BOTTOMLEFT = 16
     HT_BOTTOMRIGHT = 17
+
+
+def set_windows_app_user_model_id():
+    """Windows groups taskbar buttons/icons by "Application User Model ID";
+    a plain `python main.py` process has none set, so Explorer falls back to
+    showing python.exe's own icon in the taskbar instead of setWindowIcon()'s
+    icon. Giving the process its own explicit AppUserModelID (must be called
+    before the QApplication/first window is created) fixes that -- same
+    well-known workaround used by most Python/Electron apps launched as a
+    script rather than a compiled executable."""
+    if not IS_WINDOWS:
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "PCSX2-Manager.PatchTextureManager.1"
+        )
+    except Exception:
+        pass
 
 # Registry to keep running QThread-based workers alive if callers don't hold a reference
 _ACTIVE_WORKERS: list = []
@@ -5945,7 +5972,7 @@ class TitleBar(QWidget):
         layout.setSpacing(4)
 
         icon_label = QLabel()
-        icon_label.setPixmap(QIcon("logo.png").pixmap(18, 18))
+        icon_label.setPixmap(QIcon(APP_ICON_PATH).pixmap(20, 20))
         layout.addWidget(icon_label)
 
         title_label = QLabel("PCSX2 Manager")
@@ -5975,18 +6002,22 @@ class TitleBar(QWidget):
         self.btn_max.clicked.connect(self._toggle_maximize)
         layout.addWidget(self.btn_max)
 
-        self.btn_close = self._make_button("close", "Close")
+        self.btn_close = self._make_button("close", "Close", glow_color=theme.COLOR_DANGER)
         self.btn_close.setObjectName(theme.OBJ_TITLE_BAR_CLOSE_BUTTON)
         self.btn_close.clicked.connect(self._window.close)
         layout.addWidget(self.btn_close)
 
-    def _make_button(self, icon_name, tooltip):
+    def _make_button(self, icon_name, tooltip, glow_color=theme.COLOR_GLOW):
         b = QToolButton()
         b.setIcon(icons.tab_icon(icon_name))
         b.setToolTip(tooltip)
         b.setObjectName(theme.OBJ_TITLE_BAR_BUTTON)
         b.setFixedSize(30, 26)
         b.setCursor(Qt.ArrowCursor)
+        # Same animated hover glow used on the library's toolbar buttons --
+        # keeps the title bar in the same visual language as the rest of the
+        # PS2-Browser-styled UI instead of the old flat native-Qt hover.
+        effects.add_hover_glow(b, color=glow_color, max_blur=14)
         return b
 
     def _toggle_maximize(self):
@@ -7060,7 +7091,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.state = AppState()
         self.setWindowTitle("PCSX2 Manager")
-        self.setWindowIcon(QIcon("logo.png"))
+        self.setWindowIcon(QIcon(APP_ICON_ICO_PATH))
         self.resize(1100, 750)
         self.setMinimumSize(760, 480)
 
@@ -7368,10 +7399,11 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    set_windows_app_user_model_id()
     QCoreApplication.setOrganizationName("PCSX2-Manager")
     QCoreApplication.setApplicationName("PatchTextureManager")
     app = QApplication(sys.argv)
-    app.setWindowIcon(QIcon("logo.png"))
+    app.setWindowIcon(QIcon(APP_ICON_ICO_PATH))
     w = MainWindow()
     effects.fade_in(w, duration=320)
     w.show()

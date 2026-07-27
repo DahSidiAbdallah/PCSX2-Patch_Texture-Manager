@@ -22,7 +22,6 @@ from typing import List, Optional
 
 from PySide6.QtCore import QObject, QUrl, Signal, Slot
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtWebEngineCore import QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 _WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -104,11 +103,9 @@ class BootBridge(QObject):
 
 
 class BootScreenWidget(QWebEngineView):
-    """An original splash screen shown before the ring menu -- this app's own
-    branding/shapes and an AI-composed, PS2-inspired startup sound (not a
-    reproduction of Sony's copyrighted boot animation/sound). Auto-advances
-    once the audio finishes, or immediately on any key/click (handled in
-    web/boot.html)."""
+    """A brief title splash shown before the ring menu -- just this app's own
+    name, faded in. Auto-advances after a couple seconds, or immediately on
+    any key/click/gamepad button (handled in web/boot.html)."""
 
     finished = Signal()
 
@@ -120,12 +117,6 @@ class BootScreenWidget(QWebEngineView):
         self.channel = QWebChannel(self.page())
         self.channel.registerObject("bridge", self.bridge)
         self.page().setWebChannel(self.channel)
-        # This page autoplays its own bundled startup sound (not third-party
-        # content), so it's reasonable to lift Chromium's default "no sound
-        # without a prior user gesture" restriction just for this widget.
-        self.page().settings().setAttribute(
-            QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False
-        )
         self.setUrl(QUrl.fromLocalFile(os.path.join(_WEB_DIR, "boot.html")))
 
 

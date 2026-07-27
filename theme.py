@@ -91,6 +91,13 @@ _GRAD_SUCCESS = (
     f"qlineargradient(x1:0, y1:0, x2:0, y2:1, "
     f"stop:0 {COLOR_SUCCESS_HOVER}, stop:1 {COLOR_SUCCESS})"
 )
+# Darker than _GRAD_PANEL -- closer to the near-black backdrop the boot/ring/
+# carousel screens use, so the title bar reads as part of the same "PS2
+# Browser" surface instead of a lighter, separate strip sitting on top of it.
+_GRAD_TITLE_BAR = (
+    f"qlineargradient(x1:0, y1:0, x2:0, y2:1, "
+    f"stop:0 {COLOR_BG_TOP}, stop:1 {COLOR_SURFACE})"
+)
 
 DARK_QSS = f"""
     QMainWindow {{
@@ -307,31 +314,33 @@ DARK_QSS = f"""
         border: 1px solid {COLOR_BORDER_STRONG};
     }}
     QWidget#{OBJ_TITLE_BAR} {{
-        background: {_GRAD_PANEL};
-        border-bottom: 1px solid {COLOR_BORDER};
+        background: {_GRAD_TITLE_BAR};
+        border-bottom: 1px solid rgba(94, 200, 255, 90);
     }}
     QLabel#{OBJ_TITLE_BAR_LABEL} {{
-        color: {COLOR_TEXT};
+        color: {COLOR_GLOW};
         font-weight: 600;
     }}
     QToolButton#{OBJ_TITLE_BAR_BUTTON} {{
         background-color: transparent;
-        border: none;
+        border: 1px solid transparent;
         border-radius: {RADIUS_SM}px;
     }}
     QToolButton#{OBJ_TITLE_BAR_BUTTON}:hover {{
         background-color: {COLOR_SURFACE_ALT};
+        border: 1px solid {COLOR_GLOW};
     }}
     QToolButton#{OBJ_TITLE_BAR_BUTTON}:pressed {{
         background-color: {COLOR_BORDER_STRONG};
     }}
     QToolButton#{OBJ_TITLE_BAR_CLOSE_BUTTON} {{
         background-color: transparent;
-        border: none;
+        border: 1px solid transparent;
         border-radius: {RADIUS_SM}px;
     }}
     QToolButton#{OBJ_TITLE_BAR_CLOSE_BUTTON}:hover {{
         background-color: {COLOR_DANGER};
+        border: 1px solid {COLOR_DANGER};
     }}
     QLabel#{OBJ_STATUS_SUCCESS} {{
         color: {COLOR_SUCCESS};

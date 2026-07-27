@@ -24,7 +24,6 @@
     font-family: 'Segoe UI', sans-serif; color: #8a93a2; font-size: 13px;
     letter-spacing: 1px;
   }
-  #prompt .glyph { color: #b9c2d4; font-size: 14px; }
   /* Generic colored-badge convention for controller face buttons (A/B/X/Y) --
      not a reproduction of any manufacturer's button artwork/logo. */
   .xb-btn {
@@ -34,6 +33,24 @@
   }
   .xb-a { background: #1c8a2e; }
   .xb-b { background: #d5222b; }
+  /* A small D-pad cross (generic controller convention, not any specific
+     manufacturer's artwork) shown in gamepad mode instead of text arrows. */
+  .dpad-icon { position: relative; display: inline-block; width: 20px; height: 20px; vertical-align: -6px; margin: 0 4px; }
+  .dpad-icon .bar {
+    position: absolute; background: #262b36; border: 1px solid #5a6478; border-radius: 2px;
+  }
+  .dpad-icon .bar.h { left: 0; top: 7px; width: 20px; height: 6px; }
+  .dpad-icon .bar.v { left: 7px; top: 0; width: 6px; height: 20px; }
+  /* Small physical-keycap look for keyboard mode, replacing plain glyphs --
+     used for every keyboard-mode prompt (never a PS2/Xbox controller glyph). */
+  .key-cap {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 18px; height: 18px; padding: 0 4px; margin: 0 1px; vertical-align: -4px;
+    border-radius: 3px; font-size: 11px; font-weight: 700;
+    background: linear-gradient(180deg, #3a4256, #262c3b);
+    border: 1px solid #4a5468; border-bottom: 2px solid #171b24;
+    color: #e8edf5;
+  }
 </style>
 </head>
 <body>
@@ -170,8 +187,8 @@ function updateLabels() {
   });
 }
 function selectIndex(i) { selectedIndex = i; updateLabels(); }
-function moveLeft() { selectIndex((selectedIndex - 1 + options.length) % options.length); }
-function moveRight() { selectIndex((selectedIndex + 1) % options.length); }
+function movePrev() { selectIndex((selectedIndex - 1 + options.length) % options.length); }
+function moveNext() { selectIndex((selectedIndex + 1) % options.length); }
 
 // ---- Original synthesized confirm chime (not Sony's copyrighted sound) ----
 let audioCtx = null;
@@ -210,23 +227,23 @@ function confirmSel() {
 
 window.addEventListener('keydown', (e) => {
   ensureAudio();
-  if (e.key === 'ArrowLeft') moveLeft();
-  else if (e.key === 'ArrowRight') moveRight();
+  if (e.key === 'ArrowUp') movePrev();
+  else if (e.key === 'ArrowDown') moveNext();
   else if (e.key === 'Enter') confirmSel();
 });
 document.getElementById('scene').addEventListener('click', (e) => {
   ensureAudio();
-  const x = e.clientX / window.innerWidth;
-  if (x < 0.33) moveLeft();
-  else if (x > 0.66) moveRight();
+  const y = e.clientY / window.innerHeight;
+  if (y < 0.33) movePrev();
+  else if (y > 0.66) moveNext();
   else confirmSel();
 });
 
 // ---- Controller support + live keyboard/gamepad prompt switching ----
 const input = new InputManager();
 window.__input = input; // debug/verification handle only, see web/boot.html's __bootDebug
-input.onLeft(() => { moveLeft(); });
-input.onRight(() => { moveRight(); });
+input.onUp(() => { movePrev(); });
+input.onDown(() => { moveNext(); });
 input.onConfirm(() => { ensureAudio(); confirmSel(); });
 
 function renderPrompt() {
@@ -234,10 +251,10 @@ function renderPrompt() {
   const navEl = document.getElementById('promptNavigate');
   if (input.mode === 'gamepad') {
     confirmEl.innerHTML = '<span class="xb-btn xb-a">A</span> Select';
-    navEl.innerHTML = '&#9668; &#9658; Move';
+    navEl.innerHTML = '<span class="dpad-icon"><span class="bar h"></span><span class="bar v"></span></span> Move';
   } else {
-    confirmEl.innerHTML = '<span class="glyph">&#9166;</span> Enter';
-    navEl.innerHTML = '<span class="glyph">&#9668; &#9658;</span> Navigate';
+    confirmEl.innerHTML = '<span class="key-cap">&#9166;</span> Select';
+    navEl.innerHTML = '<span class="key-cap">&#9650;</span><span class="key-cap">&#9660;</span> Navigate';
   }
 }
 input.onModeChange(renderPrompt);

@@ -32,7 +32,6 @@
     font-family: 'Segoe UI', sans-serif; color: #eef1f6; font-size: 13px;
     letter-spacing: 0.5px; text-shadow: 0 1px 3px rgba(30, 36, 48, 0.65);
   }
-  #prompt .glyph { font-size: 14px; }
   /* Generic colored-badge convention for controller face buttons (A/B/X/Y) --
      not a reproduction of any manufacturer's button artwork/logo. */
   .xb-btn {
@@ -43,19 +42,50 @@
   }
   .xb-a { background: #1c8a2e; }
   .xb-b { background: #d5222b; }
+  .xb-y { background: #d0b02a; }
+  /* A small D-pad cross (generic controller convention, not any specific
+     manufacturer's artwork) shown in gamepad mode instead of text arrows. */
+  .dpad-icon { position: relative; display: inline-block; width: 20px; height: 20px; vertical-align: -6px; margin: 0 4px; }
+  .dpad-icon .bar {
+    position: absolute; background: #262b36; border: 1px solid #5a6478; border-radius: 2px;
+  }
+  .dpad-icon .bar.h { left: 0; top: 7px; width: 20px; height: 6px; }
+  .dpad-icon .bar.v { left: 7px; top: 0; width: 6px; height: 20px; }
+  /* Small physical-keycap look for keyboard mode, replacing plain glyphs --
+     used for every keyboard-mode prompt (never a PS2/Xbox controller glyph). */
+  .key-cap {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 18px; height: 18px; padding: 0 4px; margin: 0 1px; vertical-align: -4px;
+    border-radius: 3px; font-size: 11px; font-weight: 700;
+    background: linear-gradient(180deg, #3a4256, #262c3b);
+    border: 1px solid #4a5468; border-bottom: 2px solid #171b24;
+    color: #e8edf5; text-shadow: none;
+  }
   #empty {
     position: absolute; top: 50%; width: 100%; text-align: center; transform: translateY(-50%);
     font-family: 'Segoe UI', sans-serif; color: #f4f7fb; font-size: 16px; display: none;
     text-shadow: 0 1px 3px rgba(30, 36, 48, 0.65);
   }
-  #backBtn {
-    position: absolute; top: 18px; right: 22px;
+  #backBtn, #viewToggleBtn {
+    position: absolute; top: 18px;
     font-family: 'Segoe UI', sans-serif; font-size: 13px; color: #eef1f6;
     background: rgba(24, 30, 42, 0.5); border: 1px solid rgba(238, 241, 246, 0.35);
     border-radius: 6px; padding: 6px 14px; cursor: pointer; user-select: none;
     text-shadow: 0 1px 2px rgba(30, 36, 48, 0.6);
   }
-  #backBtn:hover { background: rgba(24, 30, 42, 0.72); border-color: #eef1f6; }
+  #backBtn { right: 22px; }
+  #viewToggleBtn { right: 118px; }
+  #backBtn:hover, #viewToggleBtn:hover { background: rgba(24, 30, 42, 0.72); border-color: #eef1f6; }
+  #zoomControl {
+    position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+    display: none; align-items: center; gap: 8px;
+    font-family: 'Segoe UI', sans-serif; font-size: 12px; color: #eef1f6;
+    background: rgba(24, 30, 42, 0.45); border: 1px solid rgba(238, 241, 246, 0.3);
+    border-radius: 8px; padding: 6px 12px;
+    text-shadow: 0 1px 2px rgba(30, 36, 48, 0.6);
+  }
+  #zoomControl input[type="range"] { width: 120px; }
+  #zoomLabel { min-width: 34px; text-align: right; }
 </style>
 </head>
 <body>
@@ -64,7 +94,13 @@
   <div class="h-title">Game Library</div>
   <div class="h-sub" id="headerCount"></div>
 </div>
-<div id="backBtn">&#9675; Back</div>
+<div id="backBtn"></div>
+<div id="viewToggleBtn">&#8862; Grid</div>
+<div id="zoomControl">
+  <span>Zoom</span>
+  <input type="range" id="zoomSlider" min="0.6" max="1.6" step="0.1" value="1">
+  <span id="zoomLabel">100%</span>
+</div>
 <div id="info">
   <div class="title" id="gameTitle"></div>
   <div class="sub" id="gameSub"></div>
@@ -92,10 +128,16 @@ import { InputManager } from './input.js';
 // The PS2 "Browser screen" adapted to games: floating cover tiles hovering
 // in a silvery mist (transparent WebGL canvas over the CSS gradient behind
 // it), bobbing gently in place like the Browser's floating save icons.
+// Two view modes share the same tile objects: 'carousel' (swipe through one
+// row, PS2-Browser-faithful) and 'grid' (multi-row, up/down moves rows,
+// zoom controls how many columns are visible -- closer to a modern emulator
+// front-end's game grid).
 
 let games = [];
 let currentIndex = 0;
 let tiles = [];
+let viewMode = 'carousel'; // 'carousel' | 'grid'
+let zoomLevel = 1.0; // 0.6 (more, smaller tiles) .. 1.6 (fewer, bigger tiles)
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 3000);
@@ -185,27 +227,69 @@ function buildTiles() {
       textureLoader.load(game.coverSource, (tex) => { mat.map = tex; mat.needsUpdate = true; });
     }
   });
-  layoutTiles(true);
+  layoutCurrent(true);
   updateInfo();
   document.getElementById('empty').style.display = games.length === 0 ? 'block' : 'none';
   document.getElementById('headerCount').textContent =
     games.length ? (games.length + ' game' + (games.length === 1 ? '' : 's')) : '';
 }
 
-function layoutTiles(snap) {
+function layoutCurrent(snap) {
+  if (viewMode === 'grid') layoutGrid(snap);
+  else layoutCarousel(snap);
+}
+
+function layoutCarousel(snap) {
   tiles.forEach(({ mesh, shadow }, i) => {
     const delta = i - currentIndex;
     mesh.userData.targetX = delta * 150;
+    mesh.userData.targetY = 0;
     mesh.userData.targetZ = -Math.abs(delta) * 90;
     mesh.userData.targetScale = delta === 0 ? 1.0 : Math.max(0.55, 1.0 - Math.abs(delta) * 0.16);
     mesh.userData.targetRotY = delta * 0.35;
     mesh.userData.targetOpacity = Math.max(0.25, 1.0 - Math.abs(delta) * 0.22);
+    mesh.userData.shadowOffsetY = -118;
     if (snap) {
-      mesh.position.set(mesh.userData.targetX, 0, mesh.userData.targetZ);
+      mesh.position.set(mesh.userData.targetX, mesh.userData.targetY, mesh.userData.targetZ);
       mesh.scale.setScalar(mesh.userData.targetScale);
       mesh.rotation.y = mesh.userData.targetRotY;
       mesh.material.opacity = mesh.userData.targetOpacity;
-      shadow.position.set(mesh.userData.targetX, -118, mesh.userData.targetZ);
+      shadow.position.set(mesh.userData.targetX, mesh.userData.targetY + mesh.userData.shadowOffsetY, mesh.userData.targetZ);
+    }
+  });
+}
+
+// Zoom sets how many columns are visible -- fewer columns means bigger tiles,
+// more columns means more of the library visible at once.
+function gridCols() {
+  return Math.max(3, Math.min(8, Math.round(6 / zoomLevel)));
+}
+
+function layoutGrid(snap) {
+  const cols = gridCols();
+  const spacingX = 150 * zoomLevel;
+  const spacingY = 196 * zoomLevel;
+  const selCol = currentIndex % cols;
+  const selRow = Math.floor(currentIndex / cols);
+  tiles.forEach(({ mesh, shadow }, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const dCol = col - selCol;
+    const dRow = row - selRow;
+    const dist = Math.abs(dRow) + Math.abs(dCol) * 0.5;
+    mesh.userData.targetX = dCol * spacingX;
+    mesh.userData.targetY = -dRow * spacingY;
+    mesh.userData.targetZ = -Math.abs(dRow) * 14;
+    mesh.userData.targetScale = (i === currentIndex ? 1.12 : 0.92) * zoomLevel;
+    mesh.userData.targetRotY = 0;
+    mesh.userData.targetOpacity = Math.max(0, 1.0 - dist * 0.16);
+    mesh.userData.shadowOffsetY = -96 * zoomLevel;
+    if (snap) {
+      mesh.position.set(mesh.userData.targetX, mesh.userData.targetY, mesh.userData.targetZ);
+      mesh.scale.setScalar(mesh.userData.targetScale);
+      mesh.rotation.y = 0;
+      mesh.material.opacity = mesh.userData.targetOpacity;
+      shadow.position.set(mesh.userData.targetX, mesh.userData.targetY + mesh.userData.shadowOffsetY, mesh.userData.targetZ);
     }
   });
 }
@@ -233,8 +317,22 @@ function notifySelection() {
   }
 }
 
-function moveLeft() { if (!games.length) return; currentIndex = (currentIndex - 1 + games.length) % games.length; layoutTiles(); updateInfo(); }
-function moveRight() { if (!games.length) return; currentIndex = (currentIndex + 1) % games.length; layoutTiles(); updateInfo(); }
+function moveLeft() { if (!games.length) return; currentIndex = (currentIndex - 1 + games.length) % games.length; layoutCurrent(); updateInfo(); }
+function moveRight() { if (!games.length) return; currentIndex = (currentIndex + 1) % games.length; layoutCurrent(); updateInfo(); }
+function moveUp() {
+  if (!games.length || viewMode !== 'grid') return;
+  const cols = gridCols();
+  if (currentIndex - cols < 0) return;
+  currentIndex -= cols;
+  layoutCurrent(); updateInfo();
+}
+function moveDown() {
+  if (!games.length || viewMode !== 'grid') return;
+  const cols = gridCols();
+  if (currentIndex + cols >= games.length) return;
+  currentIndex += cols;
+  layoutCurrent(); updateInfo();
+}
 function activate() {
   if (!games.length) return;
   const serial = games[currentIndex].serial;
@@ -253,15 +351,66 @@ document.getElementById('backBtn').addEventListener('click', (e) => {
   goBack();
 });
 
+// ---- View mode + zoom ----
+function setZoom(z) {
+  zoomLevel = Math.max(0.6, Math.min(1.6, Math.round(z * 20) / 20));
+  document.getElementById('zoomSlider').value = zoomLevel;
+  document.getElementById('zoomLabel').textContent = Math.round(zoomLevel * 100) + '%';
+  if (viewMode === 'grid') layoutCurrent();
+}
+function toggleViewMode() {
+  viewMode = viewMode === 'grid' ? 'carousel' : 'grid';
+  document.getElementById('viewToggleBtn').innerHTML = viewMode === 'grid' ? '&#9776; Carousel' : '&#8862; Grid';
+  document.getElementById('zoomControl').style.display = viewMode === 'grid' ? 'flex' : 'none';
+  layoutCurrent();
+  renderPrompt();
+}
+document.getElementById('viewToggleBtn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleViewMode();
+});
+document.getElementById('zoomSlider').addEventListener('input', (e) => setZoom(parseFloat(e.target.value)));
+document.getElementById('scene').addEventListener('wheel', (e) => {
+  if (viewMode !== 'grid') return;
+  e.preventDefault();
+  setZoom(zoomLevel + (e.deltaY < 0 ? 0.1 : -0.1));
+}, { passive: false });
+
 window.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowLeft') moveLeft();
   else if (e.key === 'ArrowRight') moveRight();
+  else if (e.key === 'ArrowUp') moveUp();
+  else if (e.key === 'ArrowDown') moveDown();
   else if (e.key === 'Enter') activate();
   else if (e.key === 'Delete') removeCurrent();
   else if (e.key === 'Escape') goBack();
+  else if (e.key.toLowerCase() === 'g') toggleViewMode();
+  else if (e.key === '-' || e.key === '_') setZoom(zoomLevel - 0.1);
+  else if (e.key === '=' || e.key === '+') setZoom(zoomLevel + 0.1);
 });
 
+// Raycasting click-to-select in grid mode (clicking a tile selects it;
+// clicking the already-selected tile installs it) -- the carousel keeps its
+// simpler left/middle/right screen-zone clicks since only one row is visible.
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+function pickTileIndexAt(clientX, clientY) {
+  pointer.x = (clientX / window.innerWidth) * 2 - 1;
+  pointer.y = -(clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObjects(tiles.map((t) => t.mesh));
+  if (!hits.length) return -1;
+  return tiles.findIndex((t) => t.mesh === hits[0].object);
+}
+
 document.getElementById('scene').addEventListener('click', (e) => {
+  if (viewMode === 'grid') {
+    const idx = pickTileIndexAt(e.clientX, e.clientY);
+    if (idx === -1) return;
+    if (idx === currentIndex) activate();
+    else { currentIndex = idx; layoutCurrent(); updateInfo(); }
+    return;
+  }
   const x = e.clientX / window.innerWidth;
   if (x < 0.33) moveLeft();
   else if (x > 0.66) moveRight();
@@ -273,24 +422,39 @@ const input = new InputManager();
 window.__input = input; // debug/verification handle only, see web/boot.html's __bootDebug
 input.onLeft(moveLeft);
 input.onRight(moveRight);
+input.onUp(moveUp);
+input.onDown(moveDown);
 input.onConfirm(activate);
 input.onBack(goBack);
+input.onButton(3, toggleViewMode); // Y
+input.onShoulderL(() => setZoom(zoomLevel - 0.1)); // LB
+input.onShoulderR(() => setZoom(zoomLevel + 0.1)); // RB
 
 function renderPrompt() {
   const install = document.getElementById('promptInstall');
   const back = document.getElementById('promptBack');
   const nav = document.getElementById('promptNavigate');
   const remove = document.getElementById('promptRemove');
+  const backBtn = document.getElementById('backBtn');
+  const keycapsKeyboard = viewMode === 'grid'
+    ? '<span class="key-cap">&#9650;</span><span class="key-cap">&#9660;</span><span class="key-cap">&#9668;</span><span class="key-cap">&#9658;</span>'
+    : '<span class="key-cap">&#9668;</span><span class="key-cap">&#9658;</span>';
+  const dpad = '<span class="dpad-icon"><span class="bar h"></span><span class="bar v"></span></span>';
   if (input.mode === 'gamepad') {
     install.innerHTML = '<span class="xb-btn xb-a">A</span> Install';
     back.innerHTML = '<span class="xb-btn xb-b">B</span> Menu';
-    nav.innerHTML = '&#9668; &#9658; Browse';
+    nav.innerHTML = dpad + ' Browse&nbsp;&nbsp;&nbsp;<span class="xb-btn xb-y">Y</span> Grid';
     remove.innerHTML = '';
+    backBtn.innerHTML = '<span class="xb-btn xb-b">B</span> Back';
   } else {
-    install.innerHTML = '<span class="glyph">&#10005;</span> Enter&nbsp;Install';
-    back.innerHTML = '<span class="glyph">&#9675;</span> Esc&nbsp;Menu';
-    nav.innerHTML = '<span class="glyph">&#9668; &#9658;</span> Browse';
-    remove.innerHTML = 'Del&nbsp;Remove';
+    // Keyboard mode must only ever show keyboard-key icons, never a PS2/Xbox
+    // controller glyph -- this replaced the old hardcoded ✕/○ PlayStation
+    // button symbols that used to leak through here regardless of mode.
+    install.innerHTML = '<span class="key-cap">&#9166;</span> Install';
+    back.innerHTML = '<span class="key-cap">Esc</span> Menu';
+    nav.innerHTML = keycapsKeyboard + ' Browse&nbsp;&nbsp;&nbsp;<span class="key-cap">G</span> Grid';
+    remove.innerHTML = '<span class="key-cap">Del</span> Remove';
+    backBtn.innerHTML = '<span class="key-cap">Esc</span> Back';
   }
 }
 input.onModeChange(renderPrompt);
@@ -323,7 +487,7 @@ window.updateGameCover = function(serial, coverSource) {
 };
 window.selectGameSerial = function(serial) {
   const idx = games.findIndex((game) => game.serial === serial);
-  if (idx >= 0) { currentIndex = idx; layoutTiles(); updateInfo(); }
+  if (idx >= 0) { currentIndex = idx; layoutCurrent(); updateInfo(); }
 };
 
 function animate(ts) {
@@ -332,16 +496,17 @@ function animate(ts) {
   tiles.forEach(({ mesh, shadow, bobPhase }) => {
     // Gentle floating bob like the Browser's hovering save icons -- the
     // shadow stays put and fades as its tile rises, selling the hover.
-    const bob = Math.sin(t * 1.3 + bobPhase) * 5;
+    const bob = Math.sin(t * 1.3 + bobPhase) * (viewMode === 'grid' ? 2.5 : 5);
     mesh.position.x += (mesh.userData.targetX - mesh.position.x) * 0.18;
     mesh.position.z += (mesh.userData.targetZ - mesh.position.z) * 0.18;
-    mesh.position.y += (bob - mesh.position.y) * 0.18;
+    mesh.position.y += (mesh.userData.targetY + bob - mesh.position.y) * 0.18;
     const s = mesh.scale.x + (mesh.userData.targetScale - mesh.scale.x) * 0.18;
     mesh.scale.set(s, s, s);
     mesh.rotation.y += (mesh.userData.targetRotY - mesh.rotation.y) * 0.18;
     mesh.material.opacity += (mesh.userData.targetOpacity - mesh.material.opacity) * 0.18;
     shadow.position.x = mesh.position.x;
     shadow.position.z = mesh.position.z;
+    shadow.position.y = mesh.position.y + mesh.userData.shadowOffsetY;
     shadow.material.opacity = (0.55 - bob * 0.03) * mesh.material.opacity;
     const shScale = 130 * s;
     shadow.scale.set(shScale, shScale * 0.26, 1);
